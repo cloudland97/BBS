@@ -695,6 +695,38 @@ async def bbtest(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ DM 테스트 실패: {type(e).__name__}: {e}", ephemeral=True)
 
+@bot.tree.command(name="bbhelp", description="사용 가능한 모든 명령어를 보여줍니다")
+async def bbhelp(interaction: discord.Interaction):
+    if not await ensure_server_channel_or_dm(interaction):
+        return
+
+    mode = get_subscriber_mode(interaction.user.id)
+    mode_labels = {"all": "토트넘 + F1 전체", "spurs": "토트넘만", "f1": "F1만"}
+    sub_status = f"구독 중 ({mode_labels.get(mode, mode)})" if mode else "미구독"
+
+    msg = (
+        "**📋 BBS 봇 명령어 목록**\n"
+        "\n"
+        "**일정**\n"
+        "`/bbtime` — 토트넘 / F1 다음 일정 1개씩\n"
+        "`/bbf1` — F1 다음 GP 전체 세션 일정\n"
+        "\n"
+        "**알림 구독 (DM)**\n"
+        "`/bbup [종목]` — 경기 알림 구독 (전체 / 토트넘만 / F1만)\n"
+        "`/bbdown` — 구독 해제\n"
+        "`/bbtest` — DM 수신 테스트\n"
+        "\n"
+        "**서버 설정 (관리자 전용)**\n"
+        "`/bbset` — 현재 채널을 봇 전용 채널로 설정\n"
+        "\n"
+        "**자동 알림 (채널)**\n"
+        "⚽ 토트넘 오피셜 라인업 — 킥오프 75분 전부터 자동 감지\n"
+        "📊 경기 결과 + 다음 3경기 — 경기 종료 후 자동 발송\n"
+        "\n"
+        f"내 구독 상태: **{sub_status}**"
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
+
 # =========================================================
 # DM NOTIFY LOOP
 # =========================================================

@@ -45,9 +45,18 @@ SOFASCORE_HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 
 ICS_CACHE_TTL = 240
@@ -487,13 +496,17 @@ def format_result_message(event_data: dict, is_home: bool, standing: int | None,
 async def update_presence():
     """봇 상태를 최근 경기 결과 + 다음 경기로 업데이트."""
     try:
-        # 최근 경기
-        data = await fetch_sofascore(
-            f"https://api.sofascore.com/api/v1/team/{SPURS_SOFASCORE_TEAM_ID}/events/last/0"
-        )
-        finished = [ev for ev in data.get("events", []) if ev.get("status", {}).get("type") == "finished"]
-
+        # 최근 경기 (403 등 실패해도 다음 경기만으로 진행)
         last_str = ""
+        try:
+            data = await fetch_sofascore(
+                f"https://api.sofascore.com/api/v1/team/{SPURS_SOFASCORE_TEAM_ID}/events/last/0"
+            )
+            finished = [ev for ev in data.get("events", []) if ev.get("status", {}).get("type") == "finished"]
+        except Exception as e:
+            print(f"presence last events 실패 (무시): {type(e).__name__}: {e}")
+            finished = []
+
         if finished:
             ev = max(finished, key=lambda x: x.get("startTimestamp", 0))
             is_home = ev.get("homeTeam", {}).get("id") == SPURS_SOFASCORE_TEAM_ID
@@ -804,12 +817,16 @@ async def bblast(interaction: discord.Interaction):
         await interaction.followup.send(msg)
 
     except Exception as e:
-        msg = f"에러: {type(e).__name__}: {e}"
+        import aiohttp as _aiohttp
+        if isinstance(e, _aiohttp.ClientResponseError) and e.status == 403:
+            err_msg = "⚠️ Sofascore에서 데이터를 가져올 수 없어. 잠시 후 다시 시도해줘."
+        else:
+            err_msg = f"에러: {type(e).__name__}: {e}"
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(msg)
+                await interaction.followup.send(err_msg)
             else:
-                await interaction.response.send_message(msg, ephemeral=True)
+                await interaction.response.send_message(err_msg, ephemeral=True)
         except:
             pass
 

@@ -484,6 +484,60 @@ def format_result_message(event_data: dict, is_home: bool, standing: int | None,
 
     return "\n".join(lines)
 
+async def update_presence():
+    """봇 상태를 최근 경기 결과 + 다음 경기로 업데이트."""
+    try:
+        # 최근 경기
+        data = await fetch_sofascore(
+            f"https://api.sofascore.com/api/v1/team/{SPURS_SOFASCORE_TEAM_ID}/events/last/0"
+        )
+        finished = [ev for ev in data.get("events", []) if ev.get("status", {}).get("type") == "finished"]
+
+        last_str = ""
+        if finished:
+            ev = max(finished, key=lambda x: x.get("startTimestamp", 0))
+            is_home = ev.get("homeTeam", {}).get("id") == SPURS_SOFASCORE_TEAM_ID
+            home_score = ev.get("homeScore", {}).get("current", 0)
+            away_score = ev.get("awayScore", {}).get("current", 0)
+            opp = ev.get("awayTeam", {}).get("shortName") or ev.get("awayTeam", {}).get("name", "?") \
+                  if is_home else \
+                  ev.get("homeTeam", {}).get("shortName") or ev.get("homeTeam", {}).get("name", "?")
+            spurs_score = home_score if is_home else away_score
+            opp_score   = away_score if is_home else home_score
+            icon = "✅" if spurs_score > opp_score else ("🟡" if spurs_score == opp_score else "❌")
+            last_str = f"{icon} {spurs_score}-{opp_score} vs {opp}"
+
+        # 다음 경기
+        next_str = ""
+        try:
+            spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
+            spurs_next = find_next_event(parse_events(spurs_ics))
+            if spurs_next:
+                t = spurs_next["start_kst"].strftime("%m/%d")
+                summary = spurs_next["summary"]
+                # 상대팀 이름만 추출 (vs / v 패턴)
+                opp_name = summary
+                for sep in [" vs ", " v ", " V ", " VS "]:
+                    if sep in summary:
+                        parts = summary.split(sep)
+                        opp_name = parts[1].strip() if "Tottenham" in parts[0] or "Spurs" in parts[0] else parts[0].strip()
+                        break
+                next_str = f"다음 vs {opp_name} {t}"
+        except:
+            pass
+
+        parts = [p for p in [last_str, next_str] if p]
+        status_text = " | ".join(parts) if parts else "토트넘 알림봇"
+
+        await bot.change_presence(
+            activity=discord.Activity(type=discord.ActivityType.watching, name=status_text)
+        )
+        print(f"presence 업데이트: {status_text}")
+
+    except Exception as e:
+        print("update_presence 실패:", type(e).__name__, e)
+
+
 async def send_to_all_guild_channels(message: str):
     guild_settings = load_guild_settings()
     for guild_id_str, settings in guild_settings.items():
@@ -563,6 +617,7 @@ async def on_ready():
             print("global sync:", [c.name for c in synced])
 
         print(f"로그인 완료: {bot.user}")
+        bot.loop.create_task(update_presence())
 
         if not hasattr(bot, "_notifier_started"):
             bot._notifier_started = True
@@ -987,6 +1042,7 @@ async def result_loop():
                                 result_state[state_key] = True
                                 save_result_state(result_state)
                                 print(f"결과 알림 발송: {recent_match['summary']}")
+                                await update_presence()
 
                         except Exception as e:
                             print("result status 확인 실패:", type(e).__name__, e)

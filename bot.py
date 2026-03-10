@@ -695,6 +695,70 @@ async def bbtest(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ DM 테스트 실패: {type(e).__name__}: {e}", ephemeral=True)
 
+@bot.tree.command(name="bblast", description="토트넘 가장 최근 경기 결과를 보여줍니다")
+async def bblast(interaction: discord.Interaction):
+    if not await ensure_server_channel(interaction):
+        return
+    try:
+        await interaction.response.defer(thinking=True)
+
+        data = await fetch_sofascore(
+            f"https://api.sofascore.com/api/v1/team/{SPURS_SOFASCORE_TEAM_ID}/events/last/0"
+        )
+        events = data.get("events", [])
+
+        # 완료된 경기 중 가장 최근 것
+        finished = [
+            ev for ev in events
+            if ev.get("status", {}).get("type") == "finished"
+        ]
+        if not finished:
+            await interaction.followup.send("최근 경기 데이터를 찾을 수 없어.")
+            return
+
+        ev = max(finished, key=lambda x: x.get("startTimestamp", 0))
+        is_home = ev.get("homeTeam", {}).get("id") == SPURS_SOFASCORE_TEAM_ID
+
+        home_name  = ev.get("homeTeam", {}).get("name", "?")
+        away_name  = ev.get("awayTeam", {}).get("name", "?")
+        home_score = ev.get("homeScore", {}).get("current", 0)
+        away_score = ev.get("awayScore", {}).get("current", 0)
+        tournament = ev.get("tournament", {}).get("name", "?")
+
+        ts = ev.get("startTimestamp", 0)
+        match_date = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(KST).strftime("%Y-%m-%d (%a) %H:%M")
+
+        spurs_score = home_score if is_home else away_score
+        opp_score   = away_score if is_home else home_score
+
+        if spurs_score > opp_score:
+            result_str = "승 ✅"
+        elif spurs_score == opp_score:
+            result_str = "무 🟡"
+        else:
+            result_str = "패 ❌"
+
+        msg = (
+            f"📊 **토트넘 최근 경기**\n"
+            f"\n"
+            f"**{home_name} {home_score} - {away_score} {away_name}**\n"
+            f"{tournament} | {match_date} KST\n"
+            f"\n"
+            f"결과: {result_str}"
+        )
+        await interaction.followup.send(msg)
+
+    except Exception as e:
+        msg = f"에러: {type(e).__name__}: {e}"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except:
+            pass
+
+
 @bot.tree.command(name="bbhelp", description="사용 가능한 모든 명령어를 보여줍니다")
 async def bbhelp(interaction: discord.Interaction):
     if not await ensure_server_channel_or_dm(interaction):
@@ -710,6 +774,7 @@ async def bbhelp(interaction: discord.Interaction):
         "**일정**\n"
         "`/bbtime` — 토트넘 / F1 다음 일정 1개씩\n"
         "`/bbf1` — F1 다음 GP 전체 세션 일정\n"
+        "`/bblast` — 토트넘 최근 경기 결과\n"
         "\n"
         "**알림 구독 (DM)**\n"
         "`/bbup [종목]` — 경기 알림 구독 (전체 / 토트넘만 / F1만)\n"

@@ -770,55 +770,130 @@ async def bblast(interaction: discord.Interaction):
     try:
         await interaction.response.defer(thinking=True)
 
+        # 1. 최근 완료 경기 조회
         data = await fetch_sofascore(
             f"https://api.sofascore.com/api/v1/team/{SPURS_SOFASCORE_TEAM_ID}/events/last/0"
         )
-        events = data.get("events", [])
-
-        # 완료된 경기 중 가장 최근 것
         finished = [
-            ev for ev in events
+            ev for ev in data.get("events", [])
             if ev.get("status", {}).get("type") == "finished"
         ]
         if not finished:
             await interaction.followup.send("최근 경기 데이터를 찾을 수 없어.")
             return
 
-        ev = max(finished, key=lambda x: x.get("startTimestamp", 0))
-        is_home = ev.get("homeTeam", {}).get("id") == SPURS_SOFASCORE_TEAM_ID
+        sf_ev = max(finished, key=lambda x: x.get("startTimestamp", 0))
+        event_id = sf_ev["id"]
+        is_home = sf_ev.get("homeTeam", {}).get("id") == SPURS_SOFASCORE_TEAM_ID
 
-        home_name  = ev.get("homeTeam", {}).get("name", "?")
-        away_name  = ev.get("awayTeam", {}).get("name", "?")
-        home_score = ev.get("homeScore", {}).get("current", 0)
-        away_score = ev.get("awayScore", {}).get("current", 0)
-        tournament = ev.get("tournament", {}).get("name", "?")
-
-        ts = ev.get("startTimestamp", 0)
+        home_name  = sf_ev.get("homeTeam", {}).get("name", "?")
+        away_name  = sf_ev.get("awayTeam", {}).get("name", "?")
+        home_score = sf_ev.get("homeScore", {}).get("current", 0)
+        away_score = sf_ev.get("awayScore", {}).get("current", 0)
+        tournament = sf_ev.get("tournament", {}).get("name", "?")
+        ts = sf_ev.get("startTimestamp", 0)
         match_date = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(KST).strftime("%Y-%m-%d (%a) %H:%M")
 
         spurs_score = home_score if is_home else away_score
         opp_score   = away_score if is_home else home_score
+        result_str  = "승 ✅" if spurs_score > opp_score else ("무 🟡" if spurs_score == opp_score else "패 ❌")
 
-        if spurs_score > opp_score:
-            result_str = "승 ✅"
-        elif spurs_score == opp_score:
-            result_str = "무 🟡"
-        else:
-            result_str = "패 ❌"
-
-        msg = (
-            f"📊 **토트넘 최근 경기**\n"
-            f"\n"
-            f"**{home_name} {home_score} - {away_score} {away_name}**\n"
-            f"{tournament} | {match_date} KST\n"
-            f"\n"
-            f"결과: {result_str}"
+        # 2. 세부 데이터 병렬 조회 (실패해도 무시)
+        lineups_data, incidents_data, event_detail = await asyncio.gather(
+            fetch_sofascore_lineups(event_id),
+            fetch_sofascore(f"https://api.sofascore.com/api/v1/event/{event_id}/incidents"),
+            fetch_sofascore_event(event_id),
+            return_exceptions=True,
         )
-        await interaction.followup.send(msg)
+        if isinstance(lineups_data, Exception):   lineups_data = {}
+        if isinstance(incidents_data, Exception): incidents_data = {}
+        if isinstance(event_detail, Exception):   event_detail = {}
+
+        # 3. MOM
+        side_key = "homeTeam" if is_home else "awayTeam"
+        best_key  = "bestHomeTeamPlayer" if is_home else "bestAwayTeamPlayer"
+        mom_data  = event_detail.get("event", {}).get(best_key, {})
+        mom_name  = mom_data.get("player", {}).get("shortName") or mom_data.get("player", {}).get("name", "")
+
+        # 4. 선수 평점 (토트넘 스타터, 평점 높은 순 top 7)
+        side = "home" if is_home else "away"
+        players = lineups_data.get(side, {}).get("players", [])
+        rated = [
+            (
+                p.get("player", {}).get("shortName") or p.get("player", {}).get("name", "?"),
+                p.get("statistics", {}).get("rating", 0),
+                p.get("substitute", False),
+            )
+            for p in players
+            if p.get("statistics", {}).get("rating")
+        ]
+        rated.sort(key=lambda x: x[1], reverse=True)
+
+        # 5. 인시던트 파싱
+        incidents = incidents_data.get("incidents", [])
+        goals, spurs_subs = [], []
+
+        for inc in incidents:
+            inc_type  = inc.get("incidentType", "")
+            inc_class = inc.get("incidentClass", "")
+            t = inc.get("time", 0)
+            added = inc.get("addedTime", 0)
+            time_str = f"{t}+{added}'" if added else f"{t}'"
+            inc_home = inc.get("isHome", False)
+
+            if inc_type == "goal":
+                scorer  = _player_name({"player": inc.get("player", {})})
+                assist  = _player_name({"player": inc.get("assist1", {})}) if inc.get("assist1") else ""
+                is_own  = inc_class == "ownGoal"
+                is_pen  = inc_class == "penalty"
+                is_spurs_goal = (inc_home == is_home)
+
+                if is_own:
+                    label = f"{time_str} ⚽ OG {scorer}"
+                elif assist:
+                    label = f"{time_str} ⚽ {scorer} ({assist})"
+                else:
+                    label = f"{time_str} ⚽ {scorer}"
+                if is_pen:
+                    label += " (PK)"
+                if not is_spurs_goal:
+                    label += f"  [{away_name if is_home else home_name}]"
+                goals.append(label)
+
+            elif inc_type == "substitution" and inc_home == is_home:
+                p_in  = inc.get("playerIn",  {}).get("shortName") or inc.get("playerIn",  {}).get("name", "?")
+                p_out = inc.get("playerOut", {}).get("shortName") or inc.get("playerOut", {}).get("name", "?")
+                spurs_subs.append(f"{time_str} 🔄 {p_in} ↑  {p_out} ↓")
+
+        # 6. 메시지 조립
+        lines = [
+            "📊 **토트넘 최근 경기**", "",
+            f"**{home_name} {home_score} - {away_score} {away_name}**",
+            f"{tournament} | {match_date} KST", "",
+            f"결과: {result_str}",
+        ]
+
+        if mom_name:
+            lines += ["", f"🏆 **MOM**: {mom_name}"]
+
+        if goals:
+            lines += ["", "**⚽ 골**"]
+            lines += goals
+
+        if spurs_subs:
+            lines += ["", "**🔄 교체 (토트넘)**"]
+            lines += spurs_subs
+
+        if rated:
+            lines += ["", "**⭐ 선수 평점 (토트넘)**"]
+            for name, rating, is_sub in rated[:7]:
+                sub_mark = " *(sub)*" if is_sub else ""
+                lines.append(f"`{rating:.1f}` {name}{sub_mark}")
+
+        await interaction.followup.send("\n".join(lines))
 
     except Exception as e:
-        import aiohttp as _aiohttp
-        if isinstance(e, _aiohttp.ClientResponseError) and e.status == 403:
+        if hasattr(e, "status") and e.status == 403:
             err_msg = "⚠️ Sofascore에서 데이터를 가져올 수 없어. 잠시 후 다시 시도해줘."
         else:
             err_msg = f"에러: {type(e).__name__}: {e}"

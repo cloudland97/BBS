@@ -313,6 +313,21 @@ def find_next_gp_sessions(events) -> tuple[str, list] | tuple[None, None]:
     next_gp = min(upcoming, key=earliest)
     return next_gp, upcoming[next_gp]
 
+def _extract_opponent(summary: str) -> str:
+    """ICS 이벤트 이름에서 상대팀 이름만 추출."""
+    spurs_kw = ["tottenham", "spurs"]
+    # 앞쪽 이모지/공백 제거
+    clean = summary.strip().lstrip("⚽️🏆🎯🏴󠁧󠁢󠁥󠁮󠁧󠁿 ")
+    for sep in [" vs ", " v ", " VS ", " V ", " - "]:
+        if sep in clean:
+            parts = clean.split(sep, 1)
+            left, right = parts[0].strip(), parts[1].strip()
+            if any(k in left.lower() for k in spurs_kw):
+                return right
+            return left
+    return clean
+
+
 def fmt_next(title: str, ev) -> str:
     t = ev["start_kst"].strftime("%Y-%m-%d (%a) %H:%M")
     return f"**{title} 다음 일정**\n**{ev['summary']}**\n시작: {t} (KST)"
@@ -528,14 +543,7 @@ async def update_presence():
             if spurs_next:
                 t = spurs_next["start_kst"].strftime("%m/%d")
                 summary = spurs_next["summary"]
-                # 상대팀 이름만 추출 (vs / v 패턴)
-                opp_name = summary
-                for sep in [" vs ", " v ", " V ", " VS "]:
-                    if sep in summary:
-                        parts = summary.split(sep)
-                        opp_name = parts[1].strip() if "Tottenham" in parts[0] or "Spurs" in parts[0] else parts[0].strip()
-                        break
-                next_str = f"다음 vs {opp_name} {t}"
+                next_str = f"다음 vs {_extract_opponent(summary)} {t}"
         except:
             pass
 
@@ -831,7 +839,7 @@ async def bblast(interaction: discord.Interaction):
 
         # 5. 인시던트 파싱
         incidents = incidents_data.get("incidents", [])
-        goals, spurs_subs = [], []
+        goals, spurs_subs, opp_subs = [], [], []
 
         for inc in incidents:
             inc_type  = inc.get("incidentType", "")
@@ -860,10 +868,29 @@ async def bblast(interaction: discord.Interaction):
                     label += f"  [{away_name if is_home else home_name}]"
                 goals.append(label)
 
-            elif inc_type == "substitution" and inc_home == is_home:
+            elif inc_type == "substitution":
                 p_in  = inc.get("playerIn",  {}).get("shortName") or inc.get("playerIn",  {}).get("name", "?")
                 p_out = inc.get("playerOut", {}).get("shortName") or inc.get("playerOut", {}).get("name", "?")
-                spurs_subs.append(f"{time_str} 🔄 {p_in} ↑  {p_out} ↓")
+                entry = f"{time_str} 🔄 {p_in} ↑  {p_out} ↓"
+                if inc_home == is_home:
+                    spurs_subs.append(entry)
+                else:
+                    opp_subs.append(entry)
+
+        # 상대팀 평점
+        opp_side = "away" if is_home else "home"
+        opp_players = lineups_data.get(opp_side, {}).get("players", [])
+        opp_rated = [
+            (
+                p.get("player", {}).get("shortName") or p.get("player", {}).get("name", "?"),
+                p.get("statistics", {}).get("rating", 0),
+                p.get("substitute", False),
+            )
+            for p in opp_players
+            if p.get("statistics", {}).get("rating")
+        ]
+        opp_rated.sort(key=lambda x: x[1], reverse=True)
+        opp_display = away_name if is_home else home_name
 
         # 6. 메시지 조립
         lines = [
@@ -884,13 +911,30 @@ async def bblast(interaction: discord.Interaction):
             lines += ["", "**🔄 교체 (토트넘)**"]
             lines += spurs_subs
 
+        if opp_subs:
+            lines += ["", f"**🔄 교체 ({opp_display})**"]
+            lines += opp_subs
+
         if rated:
             lines += ["", "**⭐ 선수 평점 (토트넘)**"]
             for name, rating, is_sub in rated[:7]:
                 sub_mark = " *(sub)*" if is_sub else ""
                 lines.append(f"`{rating:.1f}` {name}{sub_mark}")
 
-        await interaction.followup.send("\n".join(lines))
+        if opp_rated:
+            lines += ["", f"**⭐ 선수 평점 ({opp_display})**"]
+            for name, rating, is_sub in opp_rated[:5]:
+                sub_mark = " *(sub)*" if is_sub else ""
+                lines.append(f"`{rating:.1f}` {name}{sub_mark}")
+
+        # DM 발송
+        try:
+            await interaction.user.send("\n".join(lines))
+            await interaction.followup.send("📩 DM으로 보냈어.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ DM을 보낼 수 없어. 디스코드 개인정보 설정에서 DM 허용을 확인해줘.", ephemeral=True
+            )
 
     except Exception as e:
         if hasattr(e, "status") and e.status == 403:

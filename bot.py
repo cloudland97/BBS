@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -13,7 +14,8 @@ from utils import (
     fetch_fd_lineups,
     fetch_fd_match,
     fetch_ics_bytes_cached,
-    fetch_spurs_standings_position,
+    fetch_opponent_standing,
+    fetch_standings_mini,
     find_fd_match,
     find_fd_match_cached,
     find_next_event,
@@ -24,6 +26,7 @@ from utils import (
     f1_session_short,
     format_h2h_message,
     format_lineup_message,
+    format_opponent_brief,
     format_result_message,
     get_subscribers_for_source,
     load_guild_settings,
@@ -141,6 +144,23 @@ async def _h2h_suffix(kickoff: datetime, source: str) -> str:
         return ""
 
 
+async def _opponent_brief_suffix(kickoff: datetime, source: str) -> str:
+    """D-1 DM 알림용 상대팀 리그 현황. 컵대회 또는 조회 실패 시 빈 문자열 반환."""
+    if source != "spurs":
+        return ""
+    try:
+        fd_match = await find_fd_match_cached(kickoff)
+        if not fd_match:
+            return ""
+        row = await fetch_opponent_standing(fd_match)
+        if not row:
+            return ""
+        return "\n\n" + format_opponent_brief(row)
+    except Exception as e:
+        logger.warning("opponent_brief_suffix 실패: %s %s", type(e).__name__, e)
+        return ""
+
+
 # =========================================================
 # READY / SYNC
 # =========================================================
@@ -191,8 +211,10 @@ async def notify_loop():
         return target_time <= now <= (target_time + timedelta(minutes=10))
 
     try:
-        spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
-        f1_ics = await fetch_ics_bytes_cached(F1_ICS_URL)
+        spurs_ics, f1_ics = await asyncio.gather(
+            fetch_ics_bytes_cached(SPURS_ICS_URL),
+            fetch_ics_bytes_cached(F1_ICS_URL),
+        )
 
         spurs_next = find_next_event(parse_events(spurs_ics))
         f1_next = find_next_event(parse_events(f1_ics))
@@ -214,11 +236,14 @@ async def notify_loop():
             if within(d1):
                 k = make_key(source, ev["uid"], start_iso, "d-1")
                 if not state.get(k):
-                    h2h = await _h2h_suffix(start, source)
+                    opp_brief, h2h = await asyncio.gather(
+                        _opponent_brief_suffix(start, source),
+                        _h2h_suffix(start, source),
+                    )
                     for uid in get_subscribers_for_source(source):
                         try:
                             user = await bot.fetch_user(uid)
-                            await user.send(fmt_dm("⏰ D-1 알림", title, ev) + h2h)
+                            await user.send(fmt_dm("⏰ D-1 알림", title, ev) + opp_brief + h2h)
                         except Exception as e:
                             logger.warning("D-1 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
                     state[k] = True
@@ -359,9 +384,9 @@ async def result_loop():
                         status = match_detail.get("status", "")
 
                         if status == "FINISHED":
-                            standing = await fetch_spurs_standings_position(match_detail)
+                            standings_data = await fetch_standings_mini(match_detail, n=3)
                             next_fixtures = find_next_n_events(spurs_events, 3)
-                            msg = format_result_message(match_detail, is_home, standing, next_fixtures)
+                            msg = format_result_message(match_detail, is_home, standings_data, next_fixtures)
 
                             await send_to_all_guild_channels(msg)
 

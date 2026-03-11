@@ -19,9 +19,11 @@ logger = logging.getLogger(__name__)
 _fd_match_cache: dict[str, tuple[dict | None, float]] = {}
 _recent_matches_cache: tuple[list, float] | None = None
 _h2h_cache: dict[int, tuple[dict, float]] = {}
+_standings_cache: dict[str, tuple[list, float]] = {}
 
 RECENT_MATCHES_TTL = 600   # 10분
 H2H_TTL = 3600             # 1시간
+STANDINGS_TTL = 600        # 10분
 
 
 async def fetch_football_data(url: str, retries: int = 2) -> dict:
@@ -131,22 +133,59 @@ async def fetch_spurs_recent_matches(n: int = 5) -> list[dict]:
         return []
 
 
-async def fetch_spurs_standings_position(match: dict) -> int | None:
-    """football-data.org에서 토트넘 리그 순위 반환. 컵 대회는 None."""
+
+async def _fetch_competition_table(competition_code: str) -> list:
+    """TOTAL 타입 순위표 반환. 10분 캐시."""
+    now = time.monotonic()
+    cached = _standings_cache.get(competition_code)
+    if cached and now - cached[1] < STANDINGS_TTL:
+        return cached[0]
     try:
-        competition_code = match.get("competition", {}).get("code", "")
-        if competition_code not in LEAGUE_COMPETITION_CODES:
-            return None
         data = await fetch_football_data(
             f"{FOOTBALL_DATA_BASE}/competitions/{competition_code}/standings"
         )
         for group in data.get("standings", []):
-            if group.get("type") != "TOTAL":
-                continue
-            for row in group.get("table", []):
-                if row.get("team", {}).get("id") == FOOTBALL_DATA_TEAM_ID:
-                    return row.get("position")
-        return None
+            if group.get("type") == "TOTAL":
+                table = group.get("table", [])
+                _standings_cache[competition_code] = (table, now)
+                return table
+        return []
     except Exception as e:
-        logger.warning("standings fetch 실패: %s %s", type(e).__name__, e)
+        logger.warning("standings table fetch 실패 (%s): %s %s", competition_code, type(e).__name__, e)
+        return []
+
+
+async def fetch_opponent_standing(match: dict) -> dict | None:
+    """상대팀 순위 행 반환. 컵대회 또는 조회 실패 시 None."""
+    competition_code = match.get("competition", {}).get("code", "")
+    if competition_code not in LEAGUE_COMPETITION_CODES:
         return None
+    is_home = match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
+    opponent_id = match.get("awayTeam", {}).get("id") if is_home else match.get("homeTeam", {}).get("id")
+    if not opponent_id:
+        return None
+    table = await _fetch_competition_table(competition_code)
+    for row in table:
+        if row.get("team", {}).get("id") == opponent_id:
+            return row
+    return None
+
+
+async def fetch_standings_mini(match: dict, n: int = 3) -> tuple[list, int | None]:
+    """토트넘 기준 ±n 구간 순위표 행 목록 + 토트넘 순위 반환. 컵대회는 ([], None)."""
+    competition_code = match.get("competition", {}).get("code", "")
+    if competition_code not in LEAGUE_COMPETITION_CODES:
+        return [], None
+    table = await _fetch_competition_table(competition_code)
+    if not table:
+        return [], None
+    spurs_pos = None
+    for row in table:
+        if row.get("team", {}).get("id") == FOOTBALL_DATA_TEAM_ID:
+            spurs_pos = row.get("position")
+            break
+    if spurs_pos is None:
+        return [], None
+    start = max(0, spurs_pos - 1 - n)      # position은 1-based
+    end = min(len(table), spurs_pos + n)
+    return table[start:end], spurs_pos

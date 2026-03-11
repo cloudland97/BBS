@@ -156,7 +156,47 @@ def format_h2h_message(h2h_data: dict) -> str:
     return "\n".join(lines)
 
 
-def format_result_message(match: dict, is_home: bool, standing: int | None, next_fixtures: list) -> str:
+def format_opponent_brief(standing_row: dict) -> str:
+    """상대팀 리그 현황 한 줄 요약."""
+    team_name = (
+        standing_row.get("team", {}).get("shortName")
+        or standing_row.get("team", {}).get("name", "?")
+    )
+    pos = standing_row.get("position", "?")
+    pts = standing_row.get("points", "?")
+    played = standing_row.get("playedGames", "?")
+    gd = standing_row.get("goalDifference", 0)
+    gd_str = f"+{gd}" if isinstance(gd, int) and gd > 0 else str(gd)
+    return f"🔍 **상대 현황** | {team_name} | {pos}위 | 승점 {pts} | {played}경기 | 골득실 {gd_str}"
+
+
+def format_standings_mini(table: list, spurs_pos: int) -> str:
+    """토트넘 기준 ±n 구간 미니 순위표 (코드블록)."""
+    if not table:
+        return ""
+    lines = ["", "🏆 **프리미어리그 순위**", "```"]
+    for row in table:
+        pos = row.get("position", "?")
+        name = (
+            row.get("team", {}).get("shortName")
+            or row.get("team", {}).get("name", "?")
+        )
+        played = row.get("playedGames", "-")
+        pts = row.get("points", "-")
+        gd = row.get("goalDifference", 0)
+        gd_str = f"+{gd}" if isinstance(gd, int) and gd > 0 else str(gd)
+        marker = "◀" if pos == spurs_pos else "  "
+        lines.append(f"{pos:>2}{marker} {name:<18} {played:>2}경기  {pts:>3}pt  {gd_str:>4}")
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def format_result_message(
+    match: dict,
+    is_home: bool,
+    standings_data: tuple[list, int | None],
+    next_fixtures: list,
+) -> str:
     home_name = match.get("homeTeam", {}).get("name", "?")
     away_name = match.get("awayTeam", {}).get("name", "?")
     score = match.get("score", {}).get("fullTime", {})
@@ -180,8 +220,6 @@ def format_result_message(match: dict, is_home: bool, standing: int | None, next
         f"{tournament}", "",
         f"결과: {result_str}",
     ]
-    if standing is not None:
-        lines.append(f"현재 순위: **{standing}위**")
 
     goals = match.get("goals") or []
     if goals:
@@ -203,6 +241,13 @@ def format_result_message(match: dict, is_home: bool, standing: int | None, next
             if opp_goals:
                 opp_name = away_name if is_home else home_name
                 lines.append(f"{opp_name}: {' · '.join(opp_goals)}")
+
+    mini_table, spurs_pos = standings_data if standings_data else ([], None)
+    standings_str = format_standings_mini(mini_table, spurs_pos) if mini_table else ""
+    if standings_str:
+        lines.append(standings_str)
+    elif spurs_pos is not None:
+        lines.append(f"현재 순위: **{spurs_pos}위**")
 
     if next_fixtures:
         lines += ["", "📅 **다음 일정**"]

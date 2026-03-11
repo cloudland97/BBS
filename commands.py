@@ -11,7 +11,9 @@ from utils import (
     fetch_fd_h2h,
     fetch_fd_lineups,
     fetch_ics_bytes_cached,
+    fetch_opponent_standing,
     fetch_spurs_recent_matches,
+    fetch_standings_mini,
     find_fd_match_cached,
     find_next_event,
     find_next_gp_sessions,
@@ -21,8 +23,10 @@ from utils import (
     format_h2h_message,
     format_lineup_message,
     format_lineup_message_full,
+    format_opponent_brief,
     format_previous_result,
     format_recent_form,
+    format_standings_mini,
     get_guild_channel_id,
     get_subscriber_mode,
     parse_events,
@@ -116,20 +120,35 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             t = spurs_ev["start_kst"].strftime("%Y-%m-%d (%a) %H:%M")
             msg_parts.append(f"⚽ **다음 경기**\n**{spurs_ev['summary']}**\n시작: {t} (KST)")
 
-            # football-data.org에서 경기 찾기 (라인업 + H2H용)
+            # football-data.org에서 경기 찾기 (라인업 + H2H + 상대 현황용)
             fd_match = await find_fd_match_cached(spurs_ev["start_kst"])
             if fd_match:
                 match_id = fd_match["id"]
                 is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
 
+                # 상대 현황 + 순위표 + 라인업 + H2H 병렬 호출
+                opp_row, standings_result, lineup_data, h2h_data = await asyncio.gather(
+                    fetch_opponent_standing(fd_match),
+                    fetch_standings_mini(fd_match),
+                    fetch_fd_lineups(match_id),
+                    fetch_fd_h2h(match_id),
+                )
+                mini_table, spurs_pos = standings_result
+
+                # 상대팀 현황
+                if opp_row:
+                    msg_parts.append(format_opponent_brief(opp_row))
+
+                # 토트넘 기준 리그 순위표
+                if mini_table:
+                    msg_parts.append(format_standings_mini(mini_table, spurs_pos))
+
                 # 라인업 확정 시 단축 버전 표시
-                lineup_data = await fetch_fd_lineups(match_id)
                 side = "homeTeam" if is_home else "awayTeam"
                 if lineup_data.get(side, {}).get("startingXI"):
                     msg_parts.append(format_lineup_message(fd_match, lineup_data, is_home))
 
                 # H2H
-                h2h_data = await fetch_fd_h2h(match_id)
                 h2h_text = format_h2h_message(h2h_data)
                 if h2h_text:
                     msg_parts.append(h2h_text)

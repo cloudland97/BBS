@@ -28,7 +28,8 @@ from utils.football_data import (
     find_fd_match, find_fd_match_cached,
     fetch_fd_match, fetch_fd_lineups, fetch_fd_h2h,
     fetch_spurs_recent_matches,
-    fetch_spurs_standings_position,
+    fetch_opponent_standing,
+    fetch_standings_mini,
 )
 
 from utils.formatters import (
@@ -38,6 +39,8 @@ from utils.formatters import (
     format_lineup_message_full,
     format_h2h_message,
     format_result_message,
+    format_opponent_brief,
+    format_standings_mini,
 )
 
 __all__ = [
@@ -64,7 +67,8 @@ __all__ = [
     "find_fd_match", "find_fd_match_cached",
     "fetch_fd_match", "fetch_fd_lineups", "fetch_fd_h2h",
     "fetch_spurs_recent_matches",
-    "fetch_spurs_standings_position",
+    "fetch_opponent_standing",
+    "fetch_standings_mini",
     # formatters
     "format_previous_result",
     "format_recent_form",
@@ -72,4 +76,6 @@ __all__ = [
     "format_lineup_message_full",
     "format_h2h_message",
     "format_result_message",
+    "format_opponent_brief",
+    "format_standings_mini",
 ]

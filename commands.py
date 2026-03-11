@@ -1,5 +1,9 @@
+import logging
+
 import discord
 from discord import app_commands
+
+logger = logging.getLogger(__name__)
 
 from config import SPURS_ICS_URL, F1_ICS_URL, FOOTBALL_DATA_TEAM_ID
 from utils import (
@@ -144,8 +148,8 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                     await interaction.followup.send(msg)
                 else:
                     await interaction.response.send_message(msg, ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("interaction 응답 실패: %s %s", type(e).__name__, e)
 
     @bot.tree.command(name="bbf1", description="F1 다음 GP의 전체 세션 일정을 보여줍니다")
     async def bbf1(interaction: discord.Interaction):
@@ -170,8 +174,8 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                     await interaction.followup.send(msg)
                 else:
                     await interaction.response.send_message(msg, ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("interaction 응답 실패: %s %s", type(e).__name__, e)
 
     @bot.tree.command(name="bblineup", description="토트넘 다음 경기 양 팀 풀 라인업을 보여줍니다")
     async def bblineup(interaction: discord.Interaction):
@@ -212,8 +216,8 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                     await interaction.followup.send(msg)
                 else:
                     await interaction.response.send_message(msg, ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("interaction 응답 실패: %s %s", type(e).__name__, e)
 
     @bot.tree.command(name="bbup", description="경기 알림 DM 구독")
     @app_commands.describe(종목="알림 받을 종목 선택 (기본: 전체)")

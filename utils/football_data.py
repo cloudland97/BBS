@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -19,17 +20,30 @@ _fd_match_cache: dict[str, tuple[dict | None, float]] = {}
 _recent_matches_cache: tuple[list, float] | None = None
 _h2h_cache: dict[int, tuple[dict, float]] = {}
 
-RECENT_MATCHES_TTL = 600   # 10분 (경기 끝나야 바뀜)
-H2H_TTL = 3600             # 1시간 (시즌 중 천천히 변함)
+RECENT_MATCHES_TTL = 600   # 10분
+H2H_TTL = 3600             # 1시간
 
 
-async def fetch_football_data(url: str) -> dict:
+async def fetch_football_data(url: str, retries: int = 2) -> dict:
+    """football-data.org API 호출. 실패 시 최대 retries회 재시도 (지수 백오프)."""
     timeout = aiohttp.ClientTimeout(total=15)
     headers = {"X-Auth-Token": FOOTBALL_DATA_TOKEN}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(url) as r:
-            r.raise_for_status()
-            return await r.json()
+    last_error: Exception = RuntimeError("요청 실패")
+
+    for attempt in range(retries + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(url) as r:
+                    r.raise_for_status()
+                    return await r.json()
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                wait = 2 ** attempt  # 1초 → 2초
+                logger.warning("API 재시도 %d/%d (%s): %s", attempt + 1, retries, url, e)
+                await asyncio.sleep(wait)
+
+    raise last_error
 
 
 async def find_fd_match(kickoff_kst: datetime) -> dict | None:
@@ -83,7 +97,6 @@ async def fetch_fd_lineups(match_id: int) -> dict:
 
 async def fetch_fd_h2h(match_id: int) -> dict:
     """두 팀 간 상대 전적 조회. 1시간 캐시."""
-    global _h2h_cache
     now = time.monotonic()
     cached = _h2h_cache.get(match_id)
     if cached and now - cached[1] < H2H_TTL:

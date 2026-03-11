@@ -53,16 +53,58 @@ run.bat         — 윈도우 실행 스크립트
 # 패키지 설치
 pip install -r requirements.txt
 
-# 환경변수 설정 (bss.env)
-DISCORD_TOKEN=your_token_here
-SPURS_ICS_URL=...
-F1_ICS_URL=...
-FOOTBALL_DATA_TOKEN=your_football_data_token
-
 # 실행
 python bot.py
 # 또는 윈도우에서 run.bat 더블클릭
 ```
+
+---
+
+## 환경변수 설정 (bss.env)
+
+프로젝트 루트에 `bss.env` 파일 생성:
+
+```env
+DISCORD_TOKEN=your_discord_bot_token
+SPURS_ICS_URL=https://...ics    # 토트넘 경기 ICS 캘린더 URL
+F1_ICS_URL=https://...ics       # F1 일정 ICS 캘린더 URL
+FOOTBALL_DATA_TOKEN=your_token  # football-data.org 무료 API 토큰
+GUILD_ID=                       # (선택) 특정 서버에만 커맨드 등록 시 서버 ID
+```
+
+> `football-data.org` 무료 토큰 발급: https://www.football-data.org/client/register
+
+---
+
+## 운영 가이드
+
+### 첫 실행 순서
+1. `bss.env` 작성 후 봇 실행
+2. 디스코드 서버에서 `/bbset` 실행 → 알림 채널 지정 (관리자 전용)
+3. 사용자들이 `/bbup` 으로 DM 구독
+
+### 알림 정책
+
+| 알림 종류 | DM (bbup 구독자) | 채널 (bbset 설정) |
+|---------|:---:|:---:|
+| D-1 경기 예고 + 상대 전적 | ✅ | ❌ |
+| 30분 전 + 라인업(확정 시) | ✅ | ❌ |
+| 10분 전 + 라인업(확정 시) | ✅ | ❌ |
+| 라인업 자동 발표 | ✅ | ✅ |
+| 경기 결과 + 득점자 | ✅ | ✅ |
+
+### 상태 파일 자동 생성
+봇 시작 시 아래 파일이 없으면 자동 생성됨. 직접 만들 필요 없음.
+```
+notified.json / subscribers.json / guild_settings.json
+lineup_sent.json / result_sent.json
+```
+
+### football-data.org 제약
+- 무료 플랜: 분당 10요청
+- 라인업 데이터: 공식 발표 시점(킥오프 약 1시간 전) 이후 반영
+- FA Cup / League Cup: 무료 플랜 미지원 → 해당 경기 라인업/결과 없을 수 있음
+- 리그 순위: Premier League만 지원
 
 ---
 

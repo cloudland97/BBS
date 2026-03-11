@@ -1,9 +1,8 @@
-import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import commands as bot_commands
 from config import F1_ICS_URL, FOOTBALL_DATA_TEAM_ID, GUILD, SPURS_ICS_URL, TOKEN, KST
@@ -26,7 +25,6 @@ from utils import (
     format_h2h_message,
     format_lineup_message,
     format_result_message,
-    get_guild_channel_id,
     get_subscribers_for_source,
     load_guild_settings,
     load_lineup_state,
@@ -63,7 +61,6 @@ async def update_presence():
     """봇 상태를 다음 F1 + 다음 토트넘 일정으로 업데이트."""
     try:
         parts = []
-
         try:
             spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
             spurs_next = find_next_event(parse_events(spurs_ics))
@@ -169,19 +166,14 @@ async def on_ready():
             logger.info("global sync: %s", [c.name for c in synced])
 
         logger.info("로그인 완료: %s", bot.user)
-        bot.loop.create_task(update_presence())
+        await update_presence()
 
-        if not hasattr(bot, "_notifier_started"):
-            bot._notifier_started = True
-            bot.loop.create_task(notify_loop())
-
-        if not hasattr(bot, "_lineup_started"):
-            bot._lineup_started = True
-            bot.loop.create_task(lineup_loop())
-
-        if not hasattr(bot, "_result_started"):
-            bot._result_started = True
-            bot.loop.create_task(result_loop())
+        if not notify_loop.is_running():
+            notify_loop.start()
+        if not lineup_loop.is_running():
+            lineup_loop.start()
+        if not result_loop.is_running():
+            result_loop.start()
 
     except Exception as e:
         logger.error("on_ready error: %s %s", type(e).__name__, e)
@@ -190,190 +182,216 @@ async def on_ready():
 # =========================================================
 # DM NOTIFY LOOP
 # =========================================================
+@tasks.loop(seconds=300)
 async def notify_loop():
-    await bot.wait_until_ready()
     state = load_state()
+    now = datetime.now(KST)
 
     def within(target_time: datetime) -> bool:
         return target_time <= now <= (target_time + timedelta(minutes=10))
 
-    while not bot.is_closed():
-        now = datetime.now(KST)
+    try:
+        spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
+        f1_ics = await fetch_ics_bytes_cached(F1_ICS_URL)
 
-        try:
-            spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
-            f1_ics = await fetch_ics_bytes_cached(F1_ICS_URL)
+        spurs_next = find_next_event(parse_events(spurs_ics))
+        f1_next = find_next_event(parse_events(f1_ics))
 
-            spurs_next = find_next_event(parse_events(spurs_ics))
-            f1_next = find_next_event(parse_events(f1_ics))
+        targets = []
+        if spurs_next:
+            targets.append(("spurs", "⚽ 토트넘", spurs_next))
+        if f1_next:
+            targets.append(("f1", f1_session_label(f1_next["summary"]), f1_next))
 
-            targets = []
-            if spurs_next:
-                targets.append(("spurs", "⚽ 토트넘", spurs_next))
-            if f1_next:
-                targets.append(("f1", f1_session_label(f1_next["summary"]), f1_next))
+        for source, title, ev in targets:
+            start = ev["start_kst"]
+            start_iso = start.isoformat()
 
-            for source, title, ev in targets:
-                start = ev["start_kst"]
-                start_iso = start.isoformat()
+            d1  = start - timedelta(hours=24)
+            m30 = start - timedelta(minutes=30)
+            m10 = start - timedelta(minutes=10)
 
-                d1  = start - timedelta(hours=24)
-                m30 = start - timedelta(minutes=30)
-                m10 = start - timedelta(minutes=10)
+            if within(d1):
+                k = make_key(source, ev["uid"], start_iso, "d-1")
+                if not state.get(k):
+                    h2h = await _h2h_suffix(start, source)
+                    for uid in get_subscribers_for_source(source):
+                        try:
+                            user = await bot.fetch_user(uid)
+                            await user.send(fmt_dm("⏰ D-1 알림", title, ev) + h2h)
+                        except Exception as e:
+                            logger.warning("D-1 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                    state[k] = True
 
-                if within(d1):
-                    k = make_key(source, ev["uid"], start_iso, "d-1")
-                    if not state.get(k):
-                        h2h = await _h2h_suffix(start, source)
-                        for uid in get_subscribers_for_source(source):
-                            try:
-                                user = await bot.fetch_user(uid)
-                                await user.send(fmt_dm("⏰ D-1 알림", title, ev) + h2h)
-                            except Exception as e:
-                                logger.warning("D-1 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
-                        state[k] = True
+            if within(m30):
+                k = make_key(source, ev["uid"], start_iso, "m-30")
+                if not state.get(k):
+                    suffix = await _lineup_suffix(start, source)
+                    for uid in get_subscribers_for_source(source):
+                        try:
+                            user = await bot.fetch_user(uid)
+                            await user.send(fmt_dm("🔥 30분 전 알림", title, ev) + suffix)
+                        except Exception as e:
+                            logger.warning("30분 전 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                    state[k] = True
 
-                if within(m30):
-                    k = make_key(source, ev["uid"], start_iso, "m-30")
-                    if not state.get(k):
-                        suffix = await _lineup_suffix(start, source)
-                        for uid in get_subscribers_for_source(source):
-                            try:
-                                user = await bot.fetch_user(uid)
-                                await user.send(fmt_dm("🔥 30분 전 알림", title, ev) + suffix)
-                            except Exception as e:
-                                logger.warning("30분 전 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
-                        state[k] = True
+            if within(m10):
+                k = make_key(source, ev["uid"], start_iso, "m-10")
+                if not state.get(k):
+                    suffix = await _lineup_suffix(start, source)
+                    for uid in get_subscribers_for_source(source):
+                        try:
+                            user = await bot.fetch_user(uid)
+                            await user.send(fmt_dm("🚨 10분 전 알림", title, ev) + suffix)
+                        except Exception as e:
+                            logger.warning("10분 전 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                    state[k] = True
 
-                if within(m10):
-                    k = make_key(source, ev["uid"], start_iso, "m-10")
-                    if not state.get(k):
-                        suffix = await _lineup_suffix(start, source)
-                        for uid in get_subscribers_for_source(source):
-                            try:
-                                user = await bot.fetch_user(uid)
-                                await user.send(fmt_dm("🚨 10분 전 알림", title, ev) + suffix)
-                            except Exception as e:
-                                logger.warning("10분 전 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
-                        state[k] = True
+        save_state(state)
 
-            save_state(state)
+    except Exception as e:
+        logger.error("notify_loop error: %s %s", type(e).__name__, e)
 
-        except Exception as e:
-            logger.error("notify_loop error: %s %s", type(e).__name__, e)
 
-        await asyncio.sleep(300)
+@notify_loop.before_loop
+async def before_notify_loop():
+    await bot.wait_until_ready()
+
+
+@notify_loop.error
+async def on_notify_loop_error(error: Exception):
+    logger.error("notify_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
 
 
 # =========================================================
 # LINEUP LOOP
 # =========================================================
+@tasks.loop(seconds=300)
 async def lineup_loop():
-    await bot.wait_until_ready()
     lineup_state = load_lineup_state()
+    now = datetime.now(KST)
 
-    while not bot.is_closed():
-        now = datetime.now(KST)
+    try:
+        spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
+        spurs_next = find_next_event(parse_events(spurs_ics))
 
-        try:
-            spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
-            spurs_next = find_next_event(parse_events(spurs_ics))
+        if spurs_next:
+            kickoff = spurs_next["start_kst"]
+            minutes_until_kickoff = (kickoff - now).total_seconds() / 60
+            state_key = f"spurs_lineup:{spurs_next['uid']}:{kickoff.isoformat()}"
 
-            if spurs_next:
-                kickoff = spurs_next["start_kst"]
-                minutes_until_kickoff = (kickoff - now).total_seconds() / 60
-                state_key = f"spurs_lineup:{spurs_next['uid']}:{kickoff.isoformat()}"
+            if -10 <= minutes_until_kickoff <= 75 and not lineup_state.get(state_key):
+                try:
+                    fd_match = await find_fd_match_cached(kickoff)
+                except Exception as e:
+                    logger.warning("football-data match 조회 실패: %s %s", type(e).__name__, e)
+                    fd_match = None
 
-                if -10 <= minutes_until_kickoff <= 75 and not lineup_state.get(state_key):
+                if fd_match:
+                    match_id = fd_match["id"]
+                    is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
+
                     try:
-                        fd_match = await find_fd_match_cached(kickoff)
+                        lineup_data = await fetch_fd_lineups(match_id)
                     except Exception as e:
-                        logger.warning("football-data match 조회 실패: %s %s", type(e).__name__, e)
-                        fd_match = None
+                        logger.warning("lineup fetch 실패: %s %s", type(e).__name__, e)
+                        lineup_data = {}
 
-                    if fd_match:
-                        match_id = fd_match["id"]
-                        is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
+                    side = "homeTeam" if is_home else "awayTeam"
+                    if lineup_data.get(side, {}).get("startingXI"):
+                        msg = format_lineup_message(fd_match, lineup_data, is_home)
+                        await send_to_all_guild_channels(msg)
 
-                        try:
-                            lineup_data = await fetch_fd_lineups(match_id)
-                        except Exception as e:
-                            logger.warning("lineup fetch 실패: %s %s", type(e).__name__, e)
-                            lineup_data = {}
+                        for uid in get_subscribers_for_source("spurs"):
+                            try:
+                                user = await bot.fetch_user(uid)
+                                await user.send(msg)
+                            except Exception as e:
+                                logger.warning("lineup DM 실패 (%s): %s %s", uid, type(e).__name__, e)
 
-                        side = "homeTeam" if is_home else "awayTeam"
-                        if lineup_data.get(side, {}).get("startingXI"):
-                            msg = format_lineup_message(fd_match, lineup_data, is_home)
-                            await send_to_all_guild_channels(msg)
+                        lineup_state[state_key] = True
+                        save_lineup_state(lineup_state)
+                        logger.info("라인업 알림 발송: %s", spurs_next["summary"])
 
-                            lineup_state[state_key] = True
-                            save_lineup_state(lineup_state)
-                            logger.info("라인업 알림 발송: %s", spurs_next["summary"])
+    except Exception as e:
+        logger.error("lineup_loop error: %s %s", type(e).__name__, e)
 
-        except Exception as e:
-            logger.error("lineup_loop error: %s %s", type(e).__name__, e)
 
-        await asyncio.sleep(300)
+@lineup_loop.before_loop
+async def before_lineup_loop():
+    await bot.wait_until_ready()
+
+
+@lineup_loop.error
+async def on_lineup_loop_error(error: Exception):
+    logger.error("lineup_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
 
 
 # =========================================================
 # RESULT LOOP
 # =========================================================
+@tasks.loop(seconds=300)
 async def result_loop():
-    await bot.wait_until_ready()
     result_state = load_result_state()
 
-    while not bot.is_closed():
-        try:
-            spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
-            spurs_events = parse_events(spurs_ics)
-            recent_match = find_recent_spurs_match(spurs_events)
+    try:
+        spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
+        spurs_events = parse_events(spurs_ics)
+        recent_match = find_recent_spurs_match(spurs_events)
 
-            if recent_match:
-                kickoff = recent_match["start_kst"]
-                state_key = f"spurs_result:{recent_match['uid']}:{kickoff.isoformat()}"
+        if recent_match:
+            kickoff = recent_match["start_kst"]
+            state_key = f"spurs_result:{recent_match['uid']}:{kickoff.isoformat()}"
 
-                if not result_state.get(state_key):
+            if not result_state.get(state_key):
+                try:
+                    fd_match = await find_fd_match(kickoff)
+                except Exception as e:
+                    logger.warning("result football-data match 조회 실패: %s %s", type(e).__name__, e)
+                    fd_match = None
+
+                if fd_match:
+                    match_id = fd_match["id"]
+                    is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
+
                     try:
-                        fd_match = await find_fd_match(kickoff)
+                        match_detail = await fetch_fd_match(match_id)
+                        status = match_detail.get("status", "")
+
+                        if status == "FINISHED":
+                            standing = await fetch_spurs_standings_position(match_detail)
+                            next_fixtures = find_next_n_events(spurs_events, 3)
+                            msg = format_result_message(match_detail, is_home, standing, next_fixtures)
+
+                            await send_to_all_guild_channels(msg)
+
+                            for uid in get_subscribers_for_source("spurs"):
+                                try:
+                                    user = await bot.fetch_user(uid)
+                                    await user.send(msg)
+                                except Exception as e:
+                                    logger.warning("result DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+
+                            result_state[state_key] = True
+                            save_result_state(result_state)
+                            logger.info("결과 알림 발송: %s", recent_match["summary"])
+                            await update_presence()
+
                     except Exception as e:
-                        logger.warning("result football-data match 조회 실패: %s %s", type(e).__name__, e)
-                        fd_match = None
+                        logger.warning("result 상태 확인 실패: %s %s", type(e).__name__, e)
 
-                    if fd_match:
-                        match_id = fd_match["id"]
-                        is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
+    except Exception as e:
+        logger.error("result_loop error: %s %s", type(e).__name__, e)
 
-                        try:
-                            match_detail = await fetch_fd_match(match_id)
-                            status = match_detail.get("status", "")
 
-                            if status == "FINISHED":
-                                standing = await fetch_spurs_standings_position(match_detail)
-                                next_fixtures = find_next_n_events(spurs_events, 3)
-                                msg = format_result_message(match_detail, is_home, standing, next_fixtures)
+@result_loop.before_loop
+async def before_result_loop():
+    await bot.wait_until_ready()
 
-                                await send_to_all_guild_channels(msg)
 
-                                for uid in get_subscribers_for_source("spurs"):
-                                    try:
-                                        user = await bot.fetch_user(uid)
-                                        await user.send(msg)
-                                    except Exception as e:
-                                        logger.warning("result DM 실패 (%s): %s %s", uid, type(e).__name__, e)
-
-                                result_state[state_key] = True
-                                save_result_state(result_state)
-                                logger.info("결과 알림 발송: %s", recent_match["summary"])
-                                await update_presence()
-
-                        except Exception as e:
-                            logger.warning("result 상태 확인 실패: %s %s", type(e).__name__, e)
-
-        except Exception as e:
-            logger.error("result_loop error: %s %s", type(e).__name__, e)
-
-        await asyncio.sleep(300)
+@result_loop.error
+async def on_result_loop_error(error: Exception):
+    logger.error("result_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
 
 
 # =========================================================

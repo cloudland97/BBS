@@ -13,6 +13,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 SPURS_ICS_URL = os.getenv("SPURS_ICS_URL")
 F1_ICS_URL = os.getenv("F1_ICS_URL")
 GUILD_ID = os.getenv("GUILD_ID")
+FOOTBALL_DATA_TOKEN = os.getenv("FOOTBALL_DATA_TOKEN")
 
 GUILD = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
 KST = ZoneInfo("Asia/Seoul")
@@ -23,35 +24,20 @@ if not SPURS_ICS_URL:
     raise RuntimeError("SPURS_ICS_URL이 비어있음. bss.env 확인!")
 if not F1_ICS_URL:
     raise RuntimeError("F1_ICS_URL이 비어있음. bss.env 확인!")
+if not FOOTBALL_DATA_TOKEN:
+    raise RuntimeError("FOOTBALL_DATA_TOKEN이 비어있음. bss.env 확인!")
 
 # =========================================================
 # CONSTANTS
 # =========================================================
-SPURS_SOFASCORE_TEAM_ID = 33
+FOOTBALL_DATA_TEAM_ID = 73  # Tottenham Hotspur (football-data.org)
+FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
 
-SOFASCORE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://www.sofascore.com/",
-    "Origin": "https://www.sofascore.com",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
-}
+# 리그 대회 코드 목록 (순위 조회 가능한 대회만)
+LEAGUE_COMPETITION_CODES = ("PL", "BL1", "SA", "PD", "FL1")
 
-ICS_CACHE_TTL = 240
-SF_MATCH_CACHE_TTL = 240
+ICS_CACHE_TTL = 240        # ICS 캐시 유효시간 (초)
+FD_MATCH_CACHE_TTL = 240   # football-data 경기 캐시 유효시간 (초)
 STATE_CLEANUP_DAYS = 7
 
 # =========================================================

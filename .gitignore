@@ -1,5 +1,17 @@
 bss.env
 *.env
+
+# 런타임 상태 파일 (개인정보 포함, repo에 올리지 않음)
+notified.json
+subscribers.json
+guild_settings.json
+lineup_sent.json
+result_sent.json
+
+# 로그
+*.log
+
+# Python
 __pycache__/
 *.pyc
 .venv/

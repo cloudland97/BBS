@@ -20,7 +20,8 @@
 | 커맨드 | 설명 |
 |--------|------|
 | `/bbset` | 알림 채널 지정 (관리자용) |
-| `/bbtime` | 다음 토트넘 + F1 일정 확인 |
+| `/bbtt` | 이전 결과 + 다음 경기 + 최근 폼 + H2H |
+| `/bblineup` | 다음 경기 양 팀 풀 라인업 |
 | `/bbf1` | F1 다음 GP 전체 세션 일정 |
 | `/bbup` | DM 알림 구독 (토트넘 / F1 / 전체) |
 | `/bbdown` | DM 알림 구독 해제 |
@@ -32,11 +33,16 @@
 ## 파일 구조
 
 ```
-bot.py        — 봇 진입점, on_ready, 알림 루프
-commands.py   — 슬래시 커맨드
-utils.py      — ICS/Sofascore 헬퍼, 포맷 함수
-config.py     — 환경변수, 상수
-run.bat       — 윈도우 실행 스크립트
+bot.py          — 봇 진입점, on_ready, 알림 루프
+commands.py     — 슬래시 커맨드
+config.py       — 환경변수, 상수
+utils/
+  __init__.py   — re-export (외부 import 진입점)
+  storage.py    — JSON 상태 관리
+  ics.py        — ICS 파싱 + F1 헬퍼
+  football_data.py — football-data.org API + 캐시
+  formatters.py — 메시지 포맷 함수
+run.bat         — 윈도우 실행 스크립트
 ```
 
 ---
@@ -45,10 +51,13 @@ run.bat       — 윈도우 실행 스크립트
 
 ```bash
 # 패키지 설치
-pip install discord.py aiohttp icalendar python-dotenv
+pip install -r requirements.txt
 
 # 환경변수 설정 (bss.env)
 DISCORD_TOKEN=your_token_here
+SPURS_ICS_URL=...
+F1_ICS_URL=...
+FOOTBALL_DATA_TOKEN=your_football_data_token
 
 # 실행
 python bot.py
@@ -61,6 +70,29 @@ python bot.py
 
 > **Phase 1** v0.1~v0.4 — GPT 개발 (2026-03-04 ~ 2026-03-09)
 > **Phase 2** v0.5~v0.9 — Claude 개발 (2026-03-10)
+> **Phase 3** v1.0~ — Claude 개발 (2026-03-11~)
+
+---
+
+### Phase 3 — Claude (2026-03-11)
+
+#### v1.0
+- **Sofascore → football-data.org 교체** (비공식 API 의존 제거, 공식 무료 플랜)
+- `/bbtime` → `/bbtt` 리네임 + 기능 확장
+  - 이전 경기 결과 표시
+  - 최근 5경기 폼 (승무패 + 이모지)
+  - 상대 전적 H2H (최근 5경기)
+  - 라인업 확정 시 자동 포함
+- `/bblineup` 신규: 홈/어웨이 양 팀 풀 라인업 + 등번호 + 포메이션
+- 라인업 메시지에 **등번호 + 포메이션** 추가
+- 결과 메시지에 **득점자 표시** (토트넘 / 상대팀 구분)
+- D-1 DM 알림에 **상대 전적 H2H** 자동 첨부
+- `logging` 도입 (print → 레벨별 로그)
+- `utils/` 패키지 분리 (storage / ics / football_data / formatters)
+- API 캐시 추가 (최근경기 10분, H2H 1시간)
+- `requirements.txt` 추가
+- `.gitignore` 보강 (상태 JSON + 로그 파일)
+- `CLAUDE.md` 추가 (프로젝트 구조 문서)
 
 ---
 

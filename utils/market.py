@@ -310,19 +310,32 @@ def _arrow(pct: float) -> str:
     return "→"
 
 
-def _code_section(rows: list[tuple]) -> str:
-    """rows: (label, price_str, pct) 또는 (label, price_str, pct, mcap_str)"""
+def _dot(pct: float | None, hi: float = 1.0, lo: float = 0.2) -> str:
+    """변화율 기준 색상 점: 🟢🟡⚪🟠🔴"""
+    if pct is None:   return "⚪"
+    if pct >= hi:     return "🟢"
+    if pct >= lo:     return "🟡"
+    if pct <= -hi:    return "🔴"
+    if pct <= -lo:    return "🟠"
+    return "⚪"
+
+
+def _code_section(rows: list[tuple], dot_fn=None) -> str:
+    """rows: (label, price_str, pct) 또는 (label, price_str, pct, mcap_str)
+    dot_fn: pct → 이모지 함수 (선택). 제공 시 각 행 앞에 색상 점 추가.
+    """
     label_w = max(len(r[0]) for r in rows)
     price_w = max(len(r[1]) for r in rows)
     lines = []
     for row in rows:
         label, price_str, pct = row[0], row[1], row[2]
         mcap_str = row[3] if len(row) > 3 else ""
+        prefix = (dot_fn(pct) + " ") if dot_fn else ""
         if pct is None:
-            line = f"{label:<{label_w}}  {price_str:>{price_w}}"
+            line = f"{prefix}{label:<{label_w}}  {price_str:>{price_w}}"
         else:
             line = (
-                f"{label:<{label_w}}  {price_str:>{price_w}}  "
+                f"{prefix}{label:<{label_w}}  {price_str:>{price_w}}  "
                 f"{_arrow(pct)} {abs(pct):>5.2f}%"
             )
         if mcap_str:
@@ -363,13 +376,14 @@ def format_market_message(data: dict, label: str) -> str:
 
     def _fmt_rate_row(name: str, pair: tuple | None) -> str:
         if pair is None:
-            return f"{name}  N/A"
+            return f"⚪ {name}  N/A"
         cur, prev = pair
         diff = cur - prev
         if abs(diff) < 0.001:
-            return f"{name}  {cur:.2f}%  (동결)"
+            return f"⚪ {name}  {cur:.2f}%  (동결)"
+        icon  = "🔴" if diff > 0 else "🟢"
         arrow = "▲" if diff > 0 else "▼"
-        return f"{name}  {cur:.2f}%  {arrow} {abs(diff):.2f}%p"
+        return f"{icon} {name}  {cur:.2f}%  {arrow} {abs(diff):.2f}%p"
 
     def krw_coin_row(usd_sym: str, name: str) -> tuple:
         """USD 코인 가격 × USDKRW 환율 → 원화 표시."""
@@ -423,18 +437,23 @@ def format_market_message(data: dict, label: str) -> str:
         "Extreme Fear": "극단적 공포", "Fear": "공포",
         "Neutral": "중립", "Greed": "탐욕", "Extreme Greed": "극단적 탐욕",
     }
+    _fg_dot = {
+        "Extreme Fear": "🔴", "Fear": "🟠",
+        "Neutral": "🟡", "Greed": "🟢", "Extreme Greed": "🔵",
+    }
 
     def _fmt_fg() -> str:
         if fg is None:
-            return "N/A"
+            return "⚪  N/A"
         score  = fg["score"]
         rating = _rating_kr.get(fg["rating"], fg["rating"])
+        dot    = _fg_dot.get(fg["rating"], "⚪")
         prev   = fg.get("prev")
         diff   = round(score - prev, 1) if prev is not None else None
         if diff is None or abs(diff) < 0.1:
-            return f"{score:.0f}  ({rating})"
+            return f"{dot}  {score:.0f}  ({rating})"
         arrow = "▲" if diff > 0 else "▼"
-        return f"{score:.0f}  {arrow} {abs(diff):.1f}  ({rating})"
+        return f"{dot}  {score:.0f}  {arrow} {abs(diff):.1f}  ({rating})"
 
     commodity_rows = [
         mcap_metal_row("GC=F", "금(돈/KRW)"),
@@ -442,16 +461,23 @@ def format_market_message(data: dict, label: str) -> str:
         yf_row("CL=F", "WTI(bbl)", ",.2f"),
     ]
 
+    def _vix_dot(v: float) -> str:
+        if v < 15:  return "🟢"
+        if v < 20:  return "🟡"
+        if v < 30:  return "🟠"
+        return "🔴"
+
     def _vix_fg_block() -> str:
         vix_d = yf.get("^VIX")
         if vix_d:
+            dot = _vix_dot(vix_d["price"])
             vix_line = (
-                f"VIX       {format(vix_d['price'], ',.2f')}  "
+                f"{dot} VIX       {format(vix_d['price'], ',.2f')}  "
                 f"{_arrow(vix_d['change_pct'])} {abs(vix_d['change_pct']):>5.2f}%"
             )
         else:
-            vix_line = "VIX       N/A"
-        fg_line = f"공포탐욕  {_fmt_fg()}"
+            vix_line = "⚪ VIX       N/A"
+        fg_line = f"   공포탐욕  {_fmt_fg()}"
         return f"```\n{vix_line}\n{fg_line}\n```"
 
     parts = [
@@ -461,11 +487,11 @@ def format_market_message(data: dict, label: str) -> str:
         "**🏦 기준금리**",
         f"```\n{_fmt_rate_row('연방기금  ', rates.get('fed'))}\n{_fmt_rate_row('한국은행  ', rates.get('bok'))}\n```",
         "**📈 증시 / 변동성**",
-        _code_section(asian_rows),
+        _code_section(asian_rows, dot_fn=_dot),
         _vix_fg_block(),
         "**💱 환율 · 원자재 · 코인**",
         _code_section(fx_rows),
-        _code_section(commodity_rows),
-        _code_section(coin_rows),
+        _code_section(commodity_rows, dot_fn=_dot),
+        _code_section(coin_rows, dot_fn=lambda pct: _dot(pct, hi=2.0, lo=0.5)),
     ]
     return "\n".join(parts)

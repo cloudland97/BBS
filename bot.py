@@ -257,34 +257,33 @@ async def notify_loop():
         for source, title, ev in targets:
             start = ev["start_kst"]
             start_iso = start.isoformat()
+            uids = get_subscribers_for_source(source)
 
-            d1  = start - timedelta(hours=24)
-            m30 = start - timedelta(minutes=30)
-            m10 = start - timedelta(minutes=10)
+            async def _d1_suffix():
+                ob, h2h = await asyncio.gather(
+                    _opponent_brief_suffix(start, source),
+                    _h2h_suffix(start, source),
+                )
+                return ob + h2h
 
-            if within(d1):
-                k = make_key(source, ev["uid"], start_iso, "d-1")
-                if not state.get(k):
-                    opp_brief, h2h = await asyncio.gather(
-                        _opponent_brief_suffix(start, source),
-                        _h2h_suffix(start, source),
-                    )
-                    await _send_dms(get_subscribers_for_source(source), fmt_dm("⏰ D-1 알림", title, ev) + opp_brief + h2h, "D-1")
-                    state[k] = True
+            async def _pre_suffix():
+                return await _lineup_suffix(start, source)
 
-            if within(m30):
-                k = make_key(source, ev["uid"], start_iso, "m-30")
-                if not state.get(k):
-                    suffix = await _lineup_suffix(start, source)
-                    await _send_dms(get_subscribers_for_source(source), fmt_dm("🔥 30분 전 알림", title, ev) + suffix, "30분 전")
-                    state[k] = True
+            slots = [
+                ("d-1",  start - timedelta(hours=24),   "⏰ D-1 알림",    _d1_suffix),
+                ("m-30", start - timedelta(minutes=30), "🔥 30분 전 알림", _pre_suffix),
+                ("m-10", start - timedelta(minutes=10), "🚨 10분 전 알림", _pre_suffix),
+            ]
 
-            if within(m10):
-                k = make_key(source, ev["uid"], start_iso, "m-10")
-                if not state.get(k):
-                    suffix = await _lineup_suffix(start, source)
-                    await _send_dms(get_subscribers_for_source(source), fmt_dm("🚨 10분 전 알림", title, ev) + suffix, "10분 전")
-                    state[k] = True
+            for kind, target, label, get_suffix in slots:
+                if not within(target):
+                    continue
+                k = make_key(source, ev["uid"], start_iso, kind)
+                if state.get(k):
+                    continue
+                suffix = await get_suffix()
+                await _send_dms(uids, fmt_dm(label, title, ev) + suffix, kind)
+                state[k] = True
 
         save_state(state)
 

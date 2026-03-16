@@ -84,6 +84,18 @@ def find_next_n_events(events, n: int = 3) -> list:
     return future[:n]
 
 
+def find_lineup_window_match(events) -> dict | None:
+    """라인업 루프용: 킥오프 -10분 ~ +75분 이내 경기 반환."""
+    now = datetime.now(KST)
+    window_start = now - timedelta(minutes=75)
+    window_end   = now + timedelta(minutes=10)
+    candidates = sorted(
+        [e for e in events if window_start <= e["start_kst"] <= window_end],
+        key=lambda x: x["start_kst"],
+    )
+    return candidates[0] if candidates else None
+
+
 def find_recent_spurs_match(events) -> dict | None:
     """킥오프가 지났지만 3시간 이내인 경기 반환."""
     now = datetime.now(KST)

@@ -118,6 +118,30 @@ lineup_sent.json / result_sent.json
 
 ### Phase 3 — Claude (2026-03-11)
 
+#### v1.2 (2026-03-16)
+- **시황 브리핑** 기능 추가 (`/bbmk`, `bbup market`)
+  - 코스피 개장(09:00) / 마감(15:30) / 나스닥 개·폐장 시 자동 DM
+  - 환율(USD·USDT·JPY·CNY·DXY) / 증시(KOSPI·KOSDAQ·닛케이·NASDAQ) / VIX·공포탐욕지수
+  - 기준금리(연방기금·한국은행) / 금·은·WTI / BTC·ETH·**USDT** 시총
+  - 주말 발송 스킵
+  - 연방기금 FRED fetch 실패 시 config fallback 추가
+- **ARK ETF 매매 내역** 기능 추가 (`/bbark`, `bbup ark`)
+  - 매일 07:00 KST 전일 매매 내역 자동 DM
+  - 주말 발송 스킵
+- **경기 결과** 채널 발송 제거 → 구독자 DM 전용
+- **라인업 감지** 버그 수정: 킥오프 이후에도 +75분까지 감지 (`find_lineup_window_match`)
+- `/bbdm` interaction 만료(404) 버그 수정: `defer()` 최우선 실행
+- `/bbdm` 시황·ARK fetch 병렬화 (`asyncio.gather`)
+- **코드 최적화**: `_send_dms` helper, `reply_error` helper, ARK fetch 단일 gather
+- `print()` → `logger` 전환 (market.py, ark.py)
+
+#### v1.1
+- `/bbtt` 상대팀 현황 + **토트넘 기준 EPL 순위표 (±3팀)** 동시 표시
+- `/bbtt` 상대현황/순위/라인업/H2H 4개 API 병렬 호출로 응답 속도 개선
+- `notify_loop` ICS fetch 병렬화 (`asyncio.gather`)
+- `bot.py` `import asyncio` 누락 버그 수정 (D-1 알림 안정성)
+- 미사용 함수 `fetch_spurs_standings_position` 제거
+
 #### v1.0
 - **Sofascore → football-data.org 교체** (비공식 API 의존 제거, 공식 무료 플랜)
 - `/bbtime` → `/bbtt` 리네임 + 기능 확장

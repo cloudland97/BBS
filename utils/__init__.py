@@ -17,7 +17,7 @@ from utils.storage import (
 from utils.ics import (
     fetch_ics_bytes, fetch_ics_bytes_cached,
     parse_events,
-    find_next_event, find_next_n_events, find_recent_spurs_match,
+    find_next_event, find_next_n_events, find_recent_spurs_match, find_lineup_window_match,
     f1_session_label, f1_session_short, f1_gp_name, find_next_gp_sessions,
     _shorten_team, _extract_opponent,
     fmt_next, fmt_dm, fmt_bbf1,
@@ -43,6 +43,32 @@ from utils.formatters import (
     format_standings_mini,
 )
 
+from utils.market import (
+    add_market_subscriber,
+    remove_market_subscriber,
+    get_market_subscribers,
+    is_market_subscriber,
+    load_market_notified,
+    save_market_notified,
+    cleanup_market_notified,
+    get_nasdaq_open_kst,
+    get_nasdaq_close_kst,
+    fetch_market_data,
+    format_market_message,
+)
+
+from utils.ark import (
+    add_ark_subscriber,
+    remove_ark_subscriber,
+    get_ark_subscribers,
+    is_ark_subscriber,
+    load_ark_notified,
+    save_ark_notified,
+    cleanup_ark_notified,
+    fetch_ark_trades,
+    format_ark_message,
+)
+
 __all__ = [
     # storage
     "ensure_json_files",
@@ -58,7 +84,7 @@ __all__ = [
     # ics
     "fetch_ics_bytes", "fetch_ics_bytes_cached",
     "parse_events",
-    "find_next_event", "find_next_n_events", "find_recent_spurs_match",
+    "find_next_event", "find_next_n_events", "find_recent_spurs_match", "find_lineup_window_match",
     "f1_session_label", "f1_session_short", "f1_gp_name", "find_next_gp_sessions",
     "_shorten_team", "_extract_opponent",
     "fmt_next", "fmt_dm", "fmt_bbf1",
@@ -78,4 +104,15 @@ __all__ = [
     "format_result_message",
     "format_opponent_brief",
     "format_standings_mini",
+    # market
+    "add_market_subscriber", "remove_market_subscriber",
+    "get_market_subscribers", "is_market_subscriber",
+    "load_market_notified", "save_market_notified", "cleanup_market_notified",
+    "get_nasdaq_open_kst", "get_nasdaq_close_kst",
+    "fetch_market_data", "format_market_message",
+    # ark
+    "add_ark_subscriber", "remove_ark_subscriber",
+    "get_ark_subscribers", "is_ark_subscriber",
+    "load_ark_notified", "save_ark_notified", "cleanup_ark_notified",
+    "fetch_ark_trades", "format_ark_message",
 ]

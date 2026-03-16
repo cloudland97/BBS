@@ -6,36 +6,51 @@ import discord
 from discord.ext import commands, tasks
 
 import commands as bot_commands
-from config import F1_ICS_URL, FOOTBALL_DATA_TEAM_ID, GUILD, SPURS_ICS_URL, TOKEN, KST
+from config import ARK_ALERT_TIME, F1_ICS_URL, FOOTBALL_DATA_TEAM_ID, GUILD, SPURS_ICS_URL, TOKEN, KST
 from utils import (
+    cleanup_ark_notified,
+    cleanup_market_notified,
     cleanup_old_state,
     ensure_json_files,
+    fetch_ark_trades,
     fetch_fd_h2h,
     fetch_fd_lineups,
     fetch_fd_match,
     fetch_ics_bytes_cached,
+    fetch_market_data,
     fetch_opponent_standing,
     fetch_standings_mini,
     find_fd_match,
     find_fd_match_cached,
+    find_lineup_window_match,
     find_next_event,
     find_next_n_events,
     find_recent_spurs_match,
     fmt_dm,
     f1_session_label,
     f1_session_short,
+    format_ark_message,
     format_h2h_message,
     format_lineup_message,
+    format_market_message,
     format_opponent_brief,
     format_result_message,
+    get_ark_subscribers,
+    get_market_subscribers,
+    get_nasdaq_close_kst,
+    get_nasdaq_open_kst,
     get_subscribers_for_source,
+    load_ark_notified,
     load_guild_settings,
     load_lineup_state,
+    load_market_notified,
     load_result_state,
     load_state,
     make_key,
     parse_events,
+    save_ark_notified,
     save_lineup_state,
+    save_market_notified,
     save_result_state,
     save_state,
     _extract_opponent,
@@ -107,6 +122,16 @@ async def send_to_all_guild_channels(message: str):
             await ch.send(message)
         except Exception as e:
             logger.warning("채널 발송 실패 (%s): %s %s", guild_id_str, type(e).__name__, e)
+
+
+async def _send_dms(uids: list[int], msg: str, label: str):
+    """구독자 목록에 DM 발송. 실패 시 warning 로그."""
+    for uid in uids:
+        try:
+            user = await bot.fetch_user(uid)
+            await user.send(msg)
+        except Exception as e:
+            logger.warning("%s DM 실패 (%s): %s %s", label, uid, type(e).__name__, e)
 
 
 async def _lineup_suffix(kickoff: datetime, source: str) -> str:
@@ -194,6 +219,10 @@ async def on_ready():
             lineup_loop.start()
         if not result_loop.is_running():
             result_loop.start()
+        if not market_loop.is_running():
+            market_loop.start()
+        if not ark_loop.is_running():
+            ark_loop.start()
 
     except Exception as e:
         logger.error("on_ready error: %s %s", type(e).__name__, e)
@@ -240,36 +269,21 @@ async def notify_loop():
                         _opponent_brief_suffix(start, source),
                         _h2h_suffix(start, source),
                     )
-                    for uid in get_subscribers_for_source(source):
-                        try:
-                            user = await bot.fetch_user(uid)
-                            await user.send(fmt_dm("⏰ D-1 알림", title, ev) + opp_brief + h2h)
-                        except Exception as e:
-                            logger.warning("D-1 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                    await _send_dms(get_subscribers_for_source(source), fmt_dm("⏰ D-1 알림", title, ev) + opp_brief + h2h, "D-1")
                     state[k] = True
 
             if within(m30):
                 k = make_key(source, ev["uid"], start_iso, "m-30")
                 if not state.get(k):
                     suffix = await _lineup_suffix(start, source)
-                    for uid in get_subscribers_for_source(source):
-                        try:
-                            user = await bot.fetch_user(uid)
-                            await user.send(fmt_dm("🔥 30분 전 알림", title, ev) + suffix)
-                        except Exception as e:
-                            logger.warning("30분 전 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                    await _send_dms(get_subscribers_for_source(source), fmt_dm("🔥 30분 전 알림", title, ev) + suffix, "30분 전")
                     state[k] = True
 
             if within(m10):
                 k = make_key(source, ev["uid"], start_iso, "m-10")
                 if not state.get(k):
                     suffix = await _lineup_suffix(start, source)
-                    for uid in get_subscribers_for_source(source):
-                        try:
-                            user = await bot.fetch_user(uid)
-                            await user.send(fmt_dm("🚨 10분 전 알림", title, ev) + suffix)
-                        except Exception as e:
-                            logger.warning("10분 전 DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                    await _send_dms(get_subscribers_for_source(source), fmt_dm("🚨 10분 전 알림", title, ev) + suffix, "10분 전")
                     state[k] = True
 
         save_state(state)
@@ -298,14 +312,13 @@ async def lineup_loop():
 
     try:
         spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
-        spurs_next = find_next_event(parse_events(spurs_ics))
+        spurs_next = find_lineup_window_match(parse_events(spurs_ics))
 
         if spurs_next:
             kickoff = spurs_next["start_kst"]
-            minutes_until_kickoff = (kickoff - now).total_seconds() / 60
             state_key = f"spurs_lineup:{spurs_next['uid']}:{kickoff.isoformat()}"
 
-            if -10 <= minutes_until_kickoff <= 75 and not lineup_state.get(state_key):
+            if not lineup_state.get(state_key):
                 try:
                     fd_match = await find_fd_match_cached(kickoff)
                 except Exception as e:
@@ -326,13 +339,7 @@ async def lineup_loop():
                     if lineup_data.get(side, {}).get("startingXI"):
                         msg = format_lineup_message(fd_match, lineup_data, is_home)
                         await send_to_all_guild_channels(msg)
-
-                        for uid in get_subscribers_for_source("spurs"):
-                            try:
-                                user = await bot.fetch_user(uid)
-                                await user.send(msg)
-                            except Exception as e:
-                                logger.warning("lineup DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                        await _send_dms(get_subscribers_for_source("spurs"), msg, "lineup")
 
                         lineup_state[state_key] = True
                         save_lineup_state(lineup_state)
@@ -388,14 +395,7 @@ async def result_loop():
                             next_fixtures = find_next_n_events(spurs_events, 3)
                             msg = format_result_message(match_detail, is_home, standings_data, next_fixtures)
 
-                            await send_to_all_guild_channels(msg)
-
-                            for uid in get_subscribers_for_source("spurs"):
-                                try:
-                                    user = await bot.fetch_user(uid)
-                                    await user.send(msg)
-                                except Exception as e:
-                                    logger.warning("result DM 실패 (%s): %s %s", uid, type(e).__name__, e)
+                            await _send_dms(get_subscribers_for_source("spurs"), msg, "result")
 
                             result_state[state_key] = True
                             save_result_state(result_state)
@@ -417,6 +417,103 @@ async def before_result_loop():
 @result_loop.error
 async def on_result_loop_error(error: Exception):
     logger.error("result_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
+
+
+# =========================================================
+# MARKET LOOP (매 60초 — KST 시간 체크)
+# =========================================================
+@tasks.loop(seconds=60)
+async def market_loop():
+    now = datetime.now(KST)
+    if now.weekday() >= 5:  # 토(5)/일(6) 스킵
+        return
+    current_hm = now.strftime("%H:%M")
+
+    nasdaq_open  = get_nasdaq_open_kst()
+    nasdaq_close = get_nasdaq_close_kst()
+
+    alert_labels = {
+        "09:00":      "코스피 개장",
+        "15:30":      "코스피 마감",
+        nasdaq_open:  "나스닥 개장",
+        nasdaq_close: "나스닥 마감",
+    }
+
+    if current_hm not in alert_labels:
+        return
+
+    today_key = now.strftime("%Y-%m-%d")
+    state_key = f"{today_key}:{current_hm}"
+
+    notified = load_market_notified()
+    notified = cleanup_market_notified(notified)
+
+    if notified.get(state_key):
+        return
+
+    label = alert_labels[current_hm]
+    try:
+        data = await fetch_market_data()
+        msg  = format_market_message(data, label)
+
+        await _send_dms(get_market_subscribers(), msg, "시황")
+
+        notified[state_key] = True
+        save_market_notified(notified)
+        logger.info("시황 알림 발송: %s (%s)", label, current_hm)
+    except Exception as e:
+        logger.error("market_loop 발송 실패: %s %s", type(e).__name__, e)
+
+
+@market_loop.before_loop
+async def before_market_loop():
+    await bot.wait_until_ready()
+
+
+@market_loop.error
+async def on_market_loop_error(error: Exception):
+    logger.error("market_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
+
+
+# =========================================================
+# ARK LOOP (매 60초 — 07:00 KST 고정)
+# =========================================================
+@tasks.loop(seconds=60)
+async def ark_loop():
+    now = datetime.now(KST)
+    if now.weekday() >= 5:  # 토(5)/일(6) 스킵
+        return
+    if now.strftime("%H:%M") != ARK_ALERT_TIME:
+        return
+
+    today_key = now.strftime("%Y-%m-%d")
+    notified  = load_ark_notified()
+    notified  = cleanup_ark_notified(notified)
+
+    if notified.get(today_key):
+        return
+
+    try:
+        data = await fetch_ark_trades()
+        msg  = format_ark_message(data)
+
+        await _send_dms(get_ark_subscribers(), msg, "ARK")
+
+        notified[today_key] = True
+        save_ark_notified(notified)
+        logger.info("ARK 알림 발송: %s", today_key)
+    except Exception as e:
+        logger.error("ark_loop 발송 실패: %s %s", type(e).__name__, e)
+
+
+@ark_loop.before_loop
+async def before_ark_loop():
+    await bot.wait_until_ready()
+
+
+@ark_loop.error
+async def on_ark_loop_error(error: Exception):
+    logger.error("ark_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
 
 
 # =========================================================

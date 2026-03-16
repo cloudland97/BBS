@@ -4,8 +4,12 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from config import (
+    ARK_NOTIFIED_PATH,
+    ARK_SUB_PATH,
     GUILD_SETTINGS_PATH,
     LINEUP_PATH,
+    MARKET_NOTIFIED_PATH,
+    MARKET_SUB_PATH,
     RESULT_PATH,
     STATE_CLEANUP_DAYS,
     STATE_PATH,
@@ -22,6 +26,10 @@ def ensure_json_files():
         (GUILD_SETTINGS_PATH, {}),
         (LINEUP_PATH, {}),
         (RESULT_PATH, {}),
+        (MARKET_SUB_PATH, {"users": []}),
+        (MARKET_NOTIFIED_PATH, {}),
+        (ARK_SUB_PATH, {"users": []}),
+        (ARK_NOTIFIED_PATH, {}),
     ]:
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as f:

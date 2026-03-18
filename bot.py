@@ -252,8 +252,10 @@ async def on_ready():
         logger.info("로그인 완료: %s", bot.user)
         await update_presence()
 
-        # 오래된 BBC 라인업 캐시 정리
+        # 오래된 캐시/상태 정리 (시작 시 1회)
         clear_old_lineup_cache(datetime.now(KST) - timedelta(days=1))
+        save_market_notified(cleanup_market_notified(load_market_notified()))
+        save_ark_notified(cleanup_ark_notified(load_ark_notified()))
 
         if not live_score_loop.is_running():
             live_score_loop.start()
@@ -624,7 +626,6 @@ async def market_loop():
 
     today_key = now.strftime("%Y-%m-%d")
     notified = load_market_notified()
-    notified = cleanup_market_notified(notified)
 
     for alert_hm, label in alert_times.items():
         state_key = f"{today_key}:{alert_hm}"
@@ -676,7 +677,6 @@ async def ark_loop():
 
     today_key = now.strftime("%Y-%m-%d")
     notified  = load_ark_notified()
-    notified  = cleanup_ark_notified(notified)
 
     if notified.get(today_key):
         return

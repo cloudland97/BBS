@@ -19,6 +19,7 @@ from utils.ics import (
     fetch_ics_bytes, fetch_ics_bytes_cached,
     parse_events,
     find_next_event, find_next_n_events, find_recent_spurs_match, find_lineup_window_match,
+    find_live_match,
     f1_session_label, f1_session_short, f1_gp_name, find_next_gp_sessions,
     _shorten_team, extract_opponent,
     fmt_next, fmt_dm, fmt_bbf1,
@@ -77,6 +78,11 @@ from utils.lineup_scraper import (
     format_bbc_lineup_message,
 )
 
+from utils.injury_scraper import (
+    scrape_injuries,
+    format_injury_message,
+)
+
 __all__ = [
     # storage
     "ensure_json_files",
@@ -93,6 +99,7 @@ __all__ = [
     "fetch_ics_bytes", "fetch_ics_bytes_cached",
     "parse_events",
     "find_next_event", "find_next_n_events", "find_recent_spurs_match", "find_lineup_window_match",
+    "find_live_match",
     "f1_session_label", "f1_session_short", "f1_gp_name", "find_next_gp_sessions",
     "_shorten_team", "extract_opponent",
     "fmt_next", "fmt_dm", "fmt_bbf1",
@@ -126,4 +133,6 @@ __all__ = [
     # lineup_scraper
     "scrape_bbc_lineup", "get_cached_lineup",
     "clear_old_lineup_cache", "format_bbc_lineup_message",
+    # injury_scraper
+    "scrape_injuries", "format_injury_message",
 ]

@@ -26,6 +26,7 @@ from utils import (
     find_fd_match,
     find_fd_match_cached,
     find_lineup_window_match,
+    find_live_match,
     find_next_event,
     find_next_n_events,
     find_recent_spurs_match,
@@ -39,6 +40,7 @@ from utils import (
     format_market_message,
     format_opponent_brief,
     format_result_message,
+    format_injury_message,
     get_ark_subscribers,
     get_cached_lineup,
     get_market_subscribers,
@@ -59,6 +61,7 @@ from utils import (
     save_result_state,
     save_state,
     scrape_bbc_lineup,
+    scrape_injuries,
 )
 
 logging.basicConfig(
@@ -76,10 +79,56 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 bot_commands.setup(bot)
 
+# 라이브 스코어 상태 (in-memory)
+_live_embed_msgs: dict[int, discord.Message] = {}  # guild_id -> Message
+_live_match_id: int | None = None
+_live_last_score: str = ""  # 변경 감지용 직렬화 문자열
+
 
 # =========================================================
 # HELPERS THAT NEED bot INSTANCE
 # =========================================================
+def _build_live_embed(match_detail: dict) -> discord.Embed:
+    """라이브 스코어 embed 생성."""
+    home = match_detail.get("homeTeam", {}).get("name", "?")
+    away = match_detail.get("awayTeam", {}).get("name", "?")
+    score = match_detail.get("score", {})
+    full = score.get("fullTime", {})
+    home_score = full.get("home", 0) if full.get("home") is not None else "-"
+    away_score = full.get("away", 0) if full.get("away") is not None else "-"
+    status = match_detail.get("status", "")
+
+    if status == "FINISHED":
+        title = f"✅ FT | {home} {home_score} - {away_score} {away}"
+        color = 0x888888
+    else:
+        title = f"⚽ LIVE | {home} {home_score} - {away_score} {away}"
+        color = 0x00ff88
+
+    embed = discord.Embed(title=title, color=color)
+
+    # 골 이벤트 (최대 10개)
+    goals = match_detail.get("goals", [])[:10]
+    if goals:
+        spurs_team_id = FOOTBALL_DATA_TEAM_ID
+        goal_lines = []
+        for goal in goals:
+            team_id = goal.get("team", {}).get("id")
+            scorer = goal.get("scorer", {}).get("name", "?")
+            minute = goal.get("minute", "?")
+            goal_type = goal.get("type", "")
+            og_suffix = " (OG)" if goal_type == "OWN_GOAL" else ""
+            if team_id == spurs_team_id:
+                goal_lines.append(f"🟢 {scorer}{og_suffix} {minute}'")
+            else:
+                goal_lines.append(f"🔴 {scorer}{og_suffix} {minute}'")
+        embed.description = "\n".join(goal_lines)
+
+    now_str = datetime.now(KST).strftime("%H:%M")
+    embed.set_footer(text=f"football-data.org | {now_str} 기준")
+    return embed
+
+
 async def update_presence():
     """봇 상태를 다음 F1 + 다음 토트넘 일정으로 업데이트."""
     try:
@@ -232,6 +281,8 @@ async def on_ready():
         # 오래된 BBC 라인업 캐시 정리
         clear_old_lineup_cache(datetime.now(KST) - timedelta(days=1))
 
+        if not live_score_loop.is_running():
+            live_score_loop.start()
         if not notify_loop.is_running():
             notify_loop.start()
         if not lineup_loop.is_running():
@@ -247,6 +298,79 @@ async def on_ready():
 
     except Exception as e:
         logger.error("on_ready error: %s %s", type(e).__name__, e)
+
+
+# =========================================================
+# LIVE SCORE LOOP
+# =========================================================
+@tasks.loop(seconds=60)
+async def live_score_loop():
+    global _live_embed_msgs, _live_match_id, _live_last_score
+    try:
+        spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
+        live_event = find_live_match(parse_events(spurs_ics))
+
+        if not live_event:
+            _live_embed_msgs.clear()
+            _live_match_id = None
+            _live_last_score = ""
+            return
+
+        kickoff = live_event["start_kst"]
+        fd_match = await find_fd_match_cached(kickoff)
+        if not fd_match:
+            return
+
+        match_id = fd_match["id"]
+        match_detail = await fetch_fd_match(match_id)
+        status = match_detail.get("status", "")
+
+        # 변경 감지용 직렬화
+        score = match_detail.get("score", {}).get("fullTime", {})
+        goals = match_detail.get("goals", [])
+        score_str = f"{status}:{score.get('home')}:{score.get('away')}:{len(goals)}"
+        if score_str == _live_last_score:
+            return
+        _live_last_score = score_str
+
+        embed = _build_live_embed(match_detail)
+        guild_settings = load_guild_settings()
+
+        for guild_id_str, settings in guild_settings.items():
+            ch_id = settings.get("channel_id")
+            if not ch_id:
+                continue
+            guild_id = int(guild_id_str)
+            try:
+                ch = bot.get_channel(ch_id)
+                if ch is None:
+                    ch = await bot.fetch_channel(ch_id)
+                existing_msg = _live_embed_msgs.get(guild_id)
+                if existing_msg:
+                    await existing_msg.edit(embed=embed)
+                else:
+                    msg = await ch.send(embed=embed)
+                    _live_embed_msgs[guild_id] = msg
+            except Exception as e:
+                logger.warning("live_score 채널 발송 실패 (%s): %s %s", guild_id_str, type(e).__name__, e)
+
+        if status == "FINISHED":
+            _live_embed_msgs.clear()
+            _live_match_id = None
+            _live_last_score = ""
+
+    except Exception as e:
+        logger.error("live_score_loop error: %s %s", type(e).__name__, e)
+
+
+@live_score_loop.before_loop
+async def before_live_score_loop():
+    await bot.wait_until_ready()
+
+
+@live_score_loop.error
+async def on_live_score_loop_error(error: Exception):
+    logger.error("live_score_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
 
 
 # =========================================================
@@ -281,11 +405,15 @@ async def notify_loop():
             uids = get_subscribers_for_source(source)
 
             async def _d1_suffix(start=start, source=source):
-                ob, h2h = await asyncio.gather(
+                ob, h2h, injuries = await asyncio.gather(
                     _opponent_brief_suffix(start, source),
                     _h2h_suffix(start, source),
+                    scrape_injuries() if source == "spurs" else asyncio.sleep(0),
                 )
-                return ob + h2h
+                suffix = ob + h2h
+                if source == "spurs" and isinstance(injuries, list) and injuries:
+                    suffix += "\n\n" + format_injury_message(injuries)
+                return suffix
 
             async def _pre_suffix(start=start, source=source, ev_uid=ev["uid"]):
                 return await _lineup_suffix(start, source, uid=ev_uid)

@@ -43,6 +43,8 @@ from utils import (
     remove_market_subscriber,
     remove_subscriber,
     set_guild_channel,
+    scrape_injuries,
+    format_injury_message,
 )
 
 
@@ -482,6 +484,20 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             "`/bbup` — 구독 추가  |  `/bbdown` — 전체 해제"
         )
         await interaction.response.send_message(msg, ephemeral=True)
+
+    @bot.tree.command(name="bbinjury", description="토트넘 현재 부상/출장정지 선수 현황")
+    async def bbinjury(interaction: discord.Interaction):
+        if not await ensure_server_channel(interaction):
+            return
+        try:
+            await interaction.response.defer(thinking=True)
+        except (discord.NotFound, discord.HTTPException):
+            return
+        try:
+            injuries = await scrape_injuries()
+            await interaction.followup.send(format_injury_message(injuries))
+        except Exception as e:
+            await reply_error(interaction, e)
 
     @bot.tree.command(name="bbhelp", description="사용 가능한 모든 명령어를 보여줍니다")
     async def bbhelp(interaction: discord.Interaction):

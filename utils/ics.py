@@ -112,6 +112,18 @@ def find_recent_spurs_match(events) -> dict | None:
     return recent[0] if recent else None
 
 
+def find_live_match(events) -> dict | None:
+    """라이브 스코어 루프용: 킥오프 -5분 ~ +120분 이내 경기 반환."""
+    now = datetime.now(KST)
+    window_start = now - timedelta(minutes=120)
+    window_end   = now + timedelta(minutes=5)
+    candidates = sorted(
+        [e for e in events if window_start <= e["start_kst"] <= window_end],
+        key=lambda x: x["start_kst"],
+    )
+    return candidates[0] if candidates else None
+
+
 # ── F1 헬퍼 ───────────────────────────────────────────────
 def f1_session_label(summary: str) -> str:
     s = summary.lower()

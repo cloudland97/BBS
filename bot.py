@@ -375,11 +375,15 @@ async def notify_loop():
             uids = get_subscribers_for_source(source)
 
             async def _d1_suffix(start=start, source=source):
-                ob, h2h = await asyncio.gather(
+                ob, h2h, injuries = await asyncio.gather(
                     _opponent_brief_suffix(start, source),
                     _h2h_suffix(start, source),
+                    scrape_injuries() if source == "spurs" else asyncio.sleep(0),
                 )
-                return ob + h2h
+                suffix = ob + h2h
+                if source == "spurs" and isinstance(injuries, list) and injuries:
+                    suffix += "\n\n" + format_injury_message(injuries)
+                return suffix
 
             async def _pre_suffix(start=start, source=source, ev_uid=ev["uid"]):
                 return await _lineup_suffix(start, source, uid=ev_uid)

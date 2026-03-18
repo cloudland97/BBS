@@ -222,43 +222,6 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         except Exception as e:
             await reply_error(interaction, e)
 
-    @bot.tree.command(name="bblineup", description="토트넘 다음 경기 양 팀 풀 라인업을 보여줍니다")
-    async def bblineup(interaction: discord.Interaction):
-        if not await ensure_server_channel(interaction):
-            return
-        try:
-            await interaction.response.defer(thinking=True)
-        except (discord.NotFound, discord.HTTPException):
-            return
-        try:
-            spurs_bytes = await fetch_ics_bytes_cached(SPURS_ICS_URL)
-            spurs_ev = find_next_event(parse_events(spurs_bytes))
-
-            if not spurs_ev:
-                await interaction.followup.send("다음 토트넘 일정이 없습니다.")
-                return
-
-            fd_match = await find_fd_match_cached(spurs_ev["start_kst"])
-            if not fd_match:
-                await interaction.followup.send("⚠️ football-data.org에서 경기를 찾을 수 없어.")
-                return
-
-            lineup_data = await fetch_fd_lineups(fd_match["id"])
-            home_xi = lineup_data.get("homeTeam", {}).get("startingXI")
-            away_xi = lineup_data.get("awayTeam", {}).get("startingXI")
-
-            if not home_xi and not away_xi:
-                t = spurs_ev["start_kst"].strftime("%m/%d (%a) %H:%M")
-                await interaction.followup.send(
-                    f"⏳ 아직 라인업이 발표되지 않았어.\n**{spurs_ev['summary']}** | {t} KST"
-                )
-                return
-
-            await interaction.followup.send(format_lineup_message_full(fd_match, lineup_data))
-
-        except Exception as e:
-            await reply_error(interaction, e)
-
     @bot.tree.command(name="bbup", description="알림 DM 구독")
     @app_commands.describe(종목="알림 받을 종목 선택 (기본: 전체)")
     @app_commands.choices(종목=[
@@ -601,8 +564,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             "**📋 BBS 봇 명령어 목록**\n"
             "\n"
             "**토트넘 일정**\n"
-            "`/bbtt` — 다음 경기 일정 + 상대 전적 (라인업 확정 시 포함)\n"
-            "`/bblineup` — 다음 경기 양 팀 풀 라인업\n"
+            "`/bbtt` — 다음 경기 일정 + 상대 전적 + 부상자 현황 (라인업 확정 시 포함)\n"
             "\n"
             "**F1 일정**\n"
             "`/bbf1` — 다음 GP 전체 세션 일정\n"

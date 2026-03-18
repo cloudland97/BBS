@@ -80,53 +80,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 bot_commands.setup(bot)
 
 # 라이브 스코어 상태 (in-memory)
-_live_embed_msgs: dict[int, discord.Message] = {}  # guild_id -> Message
+# 라이브 스코어 상태 (in-memory)
 _live_match_id: int | None = None
-_live_last_score: str = ""  # 변경 감지용 직렬화 문자열
-
-
-# =========================================================
-# HELPERS THAT NEED bot INSTANCE
-# =========================================================
-def _build_live_embed(match_detail: dict) -> discord.Embed:
-    """라이브 스코어 embed 생성."""
-    home = match_detail.get("homeTeam", {}).get("name", "?")
-    away = match_detail.get("awayTeam", {}).get("name", "?")
-    score = match_detail.get("score", {})
-    full = score.get("fullTime", {})
-    home_score = full.get("home", 0) if full.get("home") is not None else "-"
-    away_score = full.get("away", 0) if full.get("away") is not None else "-"
-    status = match_detail.get("status", "")
-
-    if status == "FINISHED":
-        title = f"✅ FT | {home} {home_score} - {away_score} {away}"
-        color = 0x888888
-    else:
-        title = f"⚽ LIVE | {home} {home_score} - {away_score} {away}"
-        color = 0x00ff88
-
-    embed = discord.Embed(title=title, color=color)
-
-    # 골 이벤트 (최대 10개)
-    goals = match_detail.get("goals", [])[:10]
-    if goals:
-        spurs_team_id = FOOTBALL_DATA_TEAM_ID
-        goal_lines = []
-        for goal in goals:
-            team_id = goal.get("team", {}).get("id")
-            scorer = goal.get("scorer", {}).get("name", "?")
-            minute = goal.get("minute", "?")
-            goal_type = goal.get("type", "")
-            og_suffix = " (OG)" if goal_type == "OWN_GOAL" else ""
-            if team_id == spurs_team_id:
-                goal_lines.append(f"🟢 {scorer}{og_suffix} {minute}'")
-            else:
-                goal_lines.append(f"🔴 {scorer}{og_suffix} {minute}'")
-        embed.description = "\n".join(goal_lines)
-
-    now_str = datetime.now(KST).strftime("%H:%M")
-    embed.set_footer(text=f"football-data.org | {now_str} 기준")
-    return embed
+_live_last_goal_count: int = -1  # -1 = 경기 없음
 
 
 async def update_presence():
@@ -320,15 +276,14 @@ async def on_ready():
 # =========================================================
 @tasks.loop(seconds=60)
 async def live_score_loop():
-    global _live_embed_msgs, _live_match_id, _live_last_score
+    global _live_match_id, _live_last_goal_count
     try:
         spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
         live_event = find_live_match(parse_events(spurs_ics))
 
         if not live_event:
-            _live_embed_msgs.clear()
             _live_match_id = None
-            _live_last_score = ""
+            _live_last_goal_count = -1
             return
 
         kickoff = live_event["start_kst"]
@@ -339,40 +294,40 @@ async def live_score_loop():
         match_id = fd_match["id"]
         match_detail = await fetch_fd_match(match_id)
         status = match_detail.get("status", "")
-
-        # 변경 감지용 직렬화
-        score = match_detail.get("score", {}).get("fullTime", {})
         goals = match_detail.get("goals", [])
-        score_str = f"{status}:{score.get('home')}:{score.get('away')}:{len(goals)}"
-        if score_str == _live_last_score:
+
+        home = match_detail.get("homeTeam", {}).get("name", "?")
+        away = match_detail.get("awayTeam", {}).get("name", "?")
+        full = match_detail.get("score", {}).get("fullTime", {})
+        home_score = full.get("home") if full.get("home") is not None else "-"
+        away_score = full.get("away") if full.get("away") is not None else "-"
+
+        # 첫 진입: 기준값 설정 후 대기
+        if _live_match_id != match_id:
+            _live_match_id = match_id
+            _live_last_goal_count = len(goals)
             return
-        _live_last_score = score_str
 
-        embed = _build_live_embed(match_detail)
-        guild_settings = load_guild_settings()
-
-        for guild_id_str, settings in guild_settings.items():
-            ch_id = settings.get("channel_id")
-            if not ch_id:
-                continue
-            guild_id = int(guild_id_str)
-            try:
-                ch = bot.get_channel(ch_id)
-                if ch is None:
-                    ch = await bot.fetch_channel(ch_id)
-                existing_msg = _live_embed_msgs.get(guild_id)
-                if existing_msg:
-                    await existing_msg.edit(embed=embed)
+        # 새 골 감지
+        new_goals = goals[_live_last_goal_count:]
+        if new_goals:
+            uids = get_subscribers_for_source("spurs")
+            for goal in new_goals:
+                team_id = goal.get("team", {}).get("id")
+                scorer  = goal.get("scorer", {}).get("name", "?")
+                minute  = goal.get("minute", "?")
+                og_suffix = " (OG)" if goal.get("type") == "OWN_GOAL" else ""
+                if team_id == FOOTBALL_DATA_TEAM_ID:
+                    header = "⚽ **골!**"
                 else:
-                    msg = await ch.send(embed=embed)
-                    _live_embed_msgs[guild_id] = msg
-            except Exception as e:
-                logger.warning("live_score 채널 발송 실패 (%s): %s %s", guild_id_str, type(e).__name__, e)
+                    header = "🔴 **실점**"
+                msg = f"{header} {scorer}{og_suffix} {minute}'\n{home} {home_score} - {away_score} {away}"
+                await _send_dms(uids, msg, "goal_alert")
+            _live_last_goal_count = len(goals)
 
         if status == "FINISHED":
-            _live_embed_msgs.clear()
             _live_match_id = None
-            _live_last_score = ""
+            _live_last_goal_count = -1
 
     except Exception as e:
         logger.error("live_score_loop error: %s %s", type(e).__name__, e)

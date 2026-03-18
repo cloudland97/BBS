@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 
@@ -53,7 +54,7 @@ from utils import (
     save_market_notified,
     save_result_state,
     save_state,
-    _extract_opponent,
+    extract_opponent,
 )
 
 logging.basicConfig(
@@ -84,7 +85,7 @@ async def update_presence():
             spurs_next = find_next_event(parse_events(spurs_ics))
             if spurs_next:
                 t = spurs_next["start_kst"].strftime("%m/%d %H:%M")
-                opp = _extract_opponent(spurs_next["summary"])
+                opp = extract_opponent(spurs_next["summary"])
                 parts.append(f"vs {opp} {t}")
         except Exception as e:
             logger.warning("presence Spurs 조회 실패: %s %s", type(e).__name__, e)
@@ -192,6 +193,11 @@ async def _opponent_brief_suffix(kickoff: datetime, source: str) -> str:
 @bot.event
 async def on_ready():
     try:
+        # 봇 수명 동안 유지되는 공유 aiohttp 세션
+        if not hasattr(bot, "http_session") or bot.http_session is None or bot.http_session.closed:
+            bot.http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30)
+            )
         ensure_json_files()
 
         for load_fn, save_fn in [
@@ -259,14 +265,14 @@ async def notify_loop():
             start_iso = start.isoformat()
             uids = get_subscribers_for_source(source)
 
-            async def _d1_suffix():
+            async def _d1_suffix(start=start, source=source):
                 ob, h2h = await asyncio.gather(
                     _opponent_brief_suffix(start, source),
                     _h2h_suffix(start, source),
                 )
                 return ob + h2h
 
-            async def _pre_suffix():
+            async def _pre_suffix(start=start, source=source):
                 return await _lineup_suffix(start, source)
 
             slots = [
@@ -421,47 +427,46 @@ async def on_result_loop_error(error: Exception):
 # =========================================================
 # MARKET LOOP (매 60초 — KST 시간 체크)
 # =========================================================
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=30)
 async def market_loop():
     now = datetime.now(KST)
     if now.weekday() >= 5:  # 토(5)/일(6) 스킵
         return
-    current_hm = now.strftime("%H:%M")
 
     nasdaq_open  = get_nasdaq_open_kst()
     nasdaq_close = get_nasdaq_close_kst()
 
-    alert_labels = {
+    alert_times = {
         "09:00":      "코스피 개장",
         "15:30":      "코스피 마감",
         nasdaq_open:  "나스닥 개장",
         nasdaq_close: "나스닥 마감",
     }
 
-    if current_hm not in alert_labels:
-        return
-
     today_key = now.strftime("%Y-%m-%d")
-    state_key = f"{today_key}:{current_hm}"
-
     notified = load_market_notified()
     notified = cleanup_market_notified(notified)
 
-    if notified.get(state_key):
-        return
+    for alert_hm, label in alert_times.items():
+        state_key = f"{today_key}:{alert_hm}"
+        if notified.get(state_key):
+            continue
+        h, m = map(int, alert_hm.split(":"))
+        alert_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if not (alert_dt <= now <= alert_dt + timedelta(minutes=2)):
+            continue
 
-    label = alert_labels[current_hm]
-    try:
-        data = await fetch_market_data()
-        msg  = format_market_message(data, label)
+        try:
+            data = await fetch_market_data()
+            msg  = format_market_message(data, label)
 
-        await _send_dms(get_market_subscribers(), msg, "시황")
+            await _send_dms(get_market_subscribers(), msg, "시황")
 
-        notified[state_key] = True
-        save_market_notified(notified)
-        logger.info("시황 알림 발송: %s (%s)", label, current_hm)
-    except Exception as e:
-        logger.error("market_loop 발송 실패: %s %s", type(e).__name__, e)
+            notified[state_key] = True
+            save_market_notified(notified)
+            logger.info("시황 알림 발송: %s (%s)", label, alert_hm)
+        except Exception as e:
+            logger.error("market_loop 발송 실패: %s %s", type(e).__name__, e)
 
 
 @market_loop.before_loop
@@ -477,12 +482,15 @@ async def on_market_loop_error(error: Exception):
 # =========================================================
 # ARK LOOP (매 60초 — 07:00 KST 고정)
 # =========================================================
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=30)
 async def ark_loop():
     now = datetime.now(KST)
     if now.weekday() >= 5:  # 토(5)/일(6) 스킵
         return
-    if now.strftime("%H:%M") != ARK_ALERT_TIME:
+
+    h, m = map(int, ARK_ALERT_TIME.split(":"))
+    alert_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if not (alert_dt <= now <= alert_dt + timedelta(minutes=2)):
         return
 
     today_key = now.strftime("%Y-%m-%d")
@@ -513,6 +521,16 @@ async def before_ark_loop():
 @ark_loop.error
 async def on_ark_loop_error(error: Exception):
     logger.error("ark_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
+
+
+# =========================================================
+# CLEANUP
+# =========================================================
+@bot.event
+async def on_close():
+    if hasattr(bot, "http_session") and bot.http_session and not bot.http_session.closed:
+        await bot.http_session.close()
+        bot.http_session = None
 
 
 # =========================================================

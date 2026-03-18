@@ -26,7 +26,7 @@ H2H_TTL = 3600             # 1시간
 STANDINGS_TTL = 600        # 10분
 
 
-async def fetch_football_data(url: str, retries: int = 2) -> dict:
+async def fetch_football_data(url: str, retries: int = 2, session: aiohttp.ClientSession | None = None) -> dict:
     """football-data.org API 호출. 실패 시 최대 retries회 재시도 (지수 백오프)."""
     timeout = aiohttp.ClientTimeout(total=15)
     headers = {"X-Auth-Token": FOOTBALL_DATA_TOKEN}
@@ -34,10 +34,15 @@ async def fetch_football_data(url: str, retries: int = 2) -> dict:
 
     for attempt in range(retries + 1):
         try:
-            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-                async with session.get(url) as r:
+            if session is not None:
+                async with session.get(url, headers=headers) as r:
                     r.raise_for_status()
                     return await r.json()
+            else:
+                async with aiohttp.ClientSession(timeout=timeout, headers=headers) as s:
+                    async with s.get(url) as r:
+                        r.raise_for_status()
+                        return await r.json()
         except Exception as e:
             last_error = e
             if attempt < retries:

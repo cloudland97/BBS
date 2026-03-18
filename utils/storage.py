@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 from config import (
@@ -36,7 +37,10 @@ def ensure_json_files():
                 json.dump(default, f, ensure_ascii=False, indent=2)
 
 
-def _load_json(path: str, default):
+def load_json(path: str, default=None):
+    """JSON 파일을 읽어 반환. 실패 시 default 반환."""
+    if default is None:
+        default = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -44,9 +48,20 @@ def _load_json(path: str, default):
         return default
 
 
-def _save_json(path: str, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def save_json(path: str, data):
+    """JSON 파일을 원자적으로 저장 (임시 파일 → os.replace)."""
+    dir_name = os.path.dirname(os.path.abspath(path))
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".tmp", dir=dir_name, delete=False, encoding="utf-8"
+    ) as tmp:
+        json.dump(data, tmp, ensure_ascii=False, indent=2)
+        tmp_path = tmp.name
+    os.replace(tmp_path, path)
+
+
+# 하위 호환용 별칭
+_load_json = load_json
+_save_json = save_json
 
 
 def load_state():         return _load_json(STATE_PATH, {})

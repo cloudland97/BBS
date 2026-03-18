@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -86,9 +87,17 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         msg = f"에러: {type(e).__name__}: {e}"
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(msg)
+                await interaction.followup.send(msg, ephemeral=True)
             else:
                 await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException as ex:
+            if ex.code == 40060:  # already acknowledged — followup으로 재시도
+                try:
+                    await interaction.followup.send(msg, ephemeral=True)
+                except Exception:
+                    pass
+            else:
+                logger.warning("interaction 응답 실패: %s %s", type(ex).__name__, ex)
         except Exception as ex:
             logger.warning("interaction 응답 실패: %s %s", type(ex).__name__, ex)
 
@@ -118,9 +127,11 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             return
         try:
             await interaction.response.defer(thinking=True)
+        except (discord.NotFound, discord.HTTPException):
+            return
+        try:
 
             # ICS + 최근 경기 API 병렬 호출
-            import asyncio
             spurs_bytes, recent_matches = await asyncio.gather(
                 fetch_ics_bytes_cached(SPURS_ICS_URL),
                 fetch_spurs_recent_matches(5),
@@ -183,14 +194,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             await interaction.followup.send("\n\n".join(msg_parts))
 
         except Exception as e:
-            msg = f"에러: {type(e).__name__}: {e}"
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(msg)
-                else:
-                    await interaction.response.send_message(msg, ephemeral=True)
-            except Exception as e:
-                logger.warning("interaction 응답 실패: %s %s", type(e).__name__, e)
+            await reply_error(interaction, e)
 
     @bot.tree.command(name="bbf1", description="F1 다음 GP의 전체 세션 일정을 보여줍니다")
     async def bbf1(interaction: discord.Interaction):
@@ -198,7 +202,9 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             return
         try:
             await interaction.response.defer(thinking=True)
-
+        except (discord.NotFound, discord.HTTPException):
+            return
+        try:
             f1_bytes = await fetch_ics_bytes_cached(F1_ICS_URL)
             gp_name, sessions = find_next_gp_sessions(parse_events(f1_bytes))
 
@@ -209,14 +215,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             await interaction.followup.send(fmt_bbf1(gp_name, sessions))
 
         except Exception as e:
-            msg = f"에러: {type(e).__name__}: {e}"
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(msg)
-                else:
-                    await interaction.response.send_message(msg, ephemeral=True)
-            except Exception as e:
-                logger.warning("interaction 응답 실패: %s %s", type(e).__name__, e)
+            await reply_error(interaction, e)
 
     @bot.tree.command(name="bblineup", description="토트넘 다음 경기 양 팀 풀 라인업을 보여줍니다")
     async def bblineup(interaction: discord.Interaction):
@@ -224,7 +223,9 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             return
         try:
             await interaction.response.defer(thinking=True)
-
+        except (discord.NotFound, discord.HTTPException):
+            return
+        try:
             spurs_bytes = await fetch_ics_bytes_cached(SPURS_ICS_URL)
             spurs_ev = find_next_event(parse_events(spurs_bytes))
 
@@ -251,14 +252,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             await interaction.followup.send(format_lineup_message_full(fd_match, lineup_data))
 
         except Exception as e:
-            msg = f"에러: {type(e).__name__}: {e}"
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(msg)
-                else:
-                    await interaction.response.send_message(msg, ephemeral=True)
-            except Exception as e:
-                logger.warning("interaction 응답 실패: %s %s", type(e).__name__, e)
+            await reply_error(interaction, e)
 
     @bot.tree.command(name="bbup", description="알림 DM 구독")
     @app_commands.describe(종목="알림 받을 종목 선택 (기본: 전체)")
@@ -322,6 +316,9 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             return
         try:
             await interaction.response.defer(thinking=True)
+        except (discord.NotFound, discord.HTTPException):
+            return
+        try:
             data = await fetch_market_data()
             msg  = format_market_message(data, "즉시 조회")
             await interaction.followup.send(msg)
@@ -334,6 +331,9 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             return
         try:
             await interaction.response.defer(thinking=True)
+        except (discord.NotFound, discord.HTTPException):
+            return
+        try:
             data = await fetch_ark_trades()
             msg  = format_ark_message(data)
             await interaction.followup.send(msg)
@@ -342,7 +342,6 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
 
     @bot.tree.command(name="bbdm", description="구독 중인 알림을 지금 즉시 DM으로 받아봅니다")
     async def bbdm(interaction: discord.Interaction):
-        import asyncio
         try:
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:

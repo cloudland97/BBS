@@ -3,6 +3,7 @@
 
 from utils.storage import (
     ensure_json_files,
+    load_json, save_json,
     load_state, save_state,
     load_lineup_state, save_lineup_state,
     load_result_state, save_result_state,
@@ -19,7 +20,7 @@ from utils.ics import (
     parse_events,
     find_next_event, find_next_n_events, find_recent_spurs_match, find_lineup_window_match,
     f1_session_label, f1_session_short, f1_gp_name, find_next_gp_sessions,
-    _shorten_team, _extract_opponent,
+    _shorten_team, extract_opponent,
     fmt_next, fmt_dm, fmt_bbf1,
 )
 
@@ -86,7 +87,7 @@ __all__ = [
     "parse_events",
     "find_next_event", "find_next_n_events", "find_recent_spurs_match", "find_lineup_window_match",
     "f1_session_label", "f1_session_short", "f1_gp_name", "find_next_gp_sessions",
-    "_shorten_team", "_extract_opponent",
+    "_shorten_team", "extract_opponent",
     "fmt_next", "fmt_dm", "fmt_bbf1",
     # football_data
     "fetch_football_data",

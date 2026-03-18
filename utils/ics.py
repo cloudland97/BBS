@@ -30,10 +30,14 @@ _TEAM_SHORT = {
 }
 
 
-async def fetch_ics_bytes(url: str) -> bytes:
-    timeout = aiohttp.ClientTimeout(total=40)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+async def fetch_ics_bytes(url: str, session: aiohttp.ClientSession | None = None) -> bytes:
+    if session is not None:
         async with session.get(url) as r:
+            r.raise_for_status()
+            return await r.read()
+    timeout = aiohttp.ClientTimeout(total=40)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.get(url) as r:
             r.raise_for_status()
             return await r.read()
 
@@ -180,7 +184,7 @@ def _shorten_team(name: str) -> str:
     return _TEAM_SHORT.get(name.lower(), name)
 
 
-def _extract_opponent(summary: str) -> str:
+def extract_opponent(summary: str) -> str:
     spurs_kw = ["tottenham", "spurs"]
     clean = summary.strip().lstrip("⚽️🏆🎯🏴󠁧󠁢󠁥󠁮󠁧󠁿 ")
     for sep in [" vs ", " v ", " VS ", " V ", " - "]:

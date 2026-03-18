@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from datetime import datetime, timedelta
 
@@ -13,24 +12,9 @@ from config import (
     KST,
     YF_HEADERS,
 )
+from utils.storage import load_json as _load_json, save_json as _save_json
 
 logger = logging.getLogger(__name__)
-
-
-# =========================================================
-# JSON HELPERS
-# =========================================================
-def _load_json(path: str, default):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-def _save_json(path: str, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 # =========================================================

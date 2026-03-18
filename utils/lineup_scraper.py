@@ -114,11 +114,7 @@ def _parse_lineup_text(raw_text: str) -> dict | None:
 
 async def scrape_bbc_lineup(uid: str, kickoff_kst: datetime, opponent: str) -> bool:
     """BBC Sport에서 라인업 스크래핑 후 캐시 저장. 성공 시 True 반환."""
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        logger.warning("playwright 미설치 — BBC 라인업 스크래핑 불가")
-        return False
+    from utils.playwright_manager import get_browser
 
     year_month = kickoff_kst.strftime("%Y-%m")
     fixtures_url = (
@@ -129,89 +125,73 @@ async def scrape_bbc_lineup(uid: str, kickoff_kst: datetime, opponent: str) -> b
     kick_day = kickoff_kst.day
     kick_month = kickoff_kst.month
     opponent_lower = opponent.lower()
-
     match_url = None
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            try:
-                context = await browser.new_context(user_agent=_USER_AGENT)
-                page = await context.new_page()
+        browser = await get_browser()
+        context = await browser.new_context(user_agent=_USER_AGENT)
+        page = await context.new_page()
+        try:
+            # 1) 일정 페이지에서 경기 URL 찾기
+            await page.goto(fixtures_url)
+            await page.wait_for_load_state("domcontentloaded")
+            await asyncio.sleep(2)
 
-                # 1) 일정 페이지에서 경기 URL 찾기
-                await page.goto(fixtures_url)
-                await page.wait_for_load_state("domcontentloaded")
-                await asyncio.sleep(2)
+            links = await page.query_selector_all('a[href*="/sport/football/"]')
+            for link in links:
+                try:
+                    href = await link.get_attribute("href")
+                    if not href:
+                        continue
+                    parent = await link.evaluate_handle(
+                        "el => el.closest('li') || el.closest('div') || el.parentElement"
+                    )
+                    parent_text = await parent.inner_text() if parent else ""
+                    if not parent_text:
+                        parent_text = await link.inner_text()
 
-                # 모든 경기 링크 수집
-                links = await page.query_selector_all('a[href*="/sport/football/"]')
-                for link in links:
-                    try:
-                        href = await link.get_attribute("href")
-                        if not href:
-                            continue
-
-                        # 부모 요소에서 날짜와 팀명 텍스트 가져오기
-                        parent = await link.evaluate_handle(
-                            "el => el.closest('li') || el.closest('div') || el.parentElement"
-                        )
-                        parent_text = await parent.inner_text() if parent else ""
-
-                        if not parent_text:
-                            parent_text = await link.inner_text()
-
-                        # 날짜 매칭
-                        parsed = _parse_bbc_date(parent_text)
-                        if not parsed:
-                            continue
-                        p_day, p_month = parsed
-
-                        if p_day != kick_day or p_month != kick_month:
-                            continue
-
-                        # 상대팀명 매칭
-                        if opponent_lower not in parent_text.lower():
-                            continue
-
-                        # 매칭 성공
-                        if href.startswith("/"):
-                            match_url = f"https://www.bbc.com{href}"
-                        else:
-                            match_url = href
-                        break
-                    except Exception:
+                    parsed = _parse_bbc_date(parent_text)
+                    if not parsed:
+                        continue
+                    p_day, p_month = parsed
+                    if p_day != kick_day or p_month != kick_month:
+                        continue
+                    if opponent_lower not in parent_text.lower():
                         continue
 
-                if not match_url:
-                    logger.info("BBC 일정에서 경기 URL 찾지 못함: %s vs %s (%s)", "Spurs", opponent, year_month)
-                    return False
+                    match_url = f"https://www.bbc.com{href}" if href.startswith("/") else href
+                    break
+                except Exception:
+                    continue
 
-                # 2) 경기 페이지에서 라인업 스크래핑
-                await page.goto(match_url)
-                await page.wait_for_load_state("domcontentloaded")
-                await asyncio.sleep(2)
+            if not match_url:
+                logger.info("BBC 일정에서 경기 URL 찾지 못함: Spurs vs %s (%s)", opponent, year_month)
+                return False
 
-                container = await page.query_selector('[class*="MatchLineupsContainer"]')
-                if not container:
-                    logger.info("BBC 라인업 컨테이너 없음: %s", match_url)
-                    return False
+            # 2) 경기 페이지에서 라인업 스크래핑
+            await page.goto(match_url)
+            await page.wait_for_load_state("domcontentloaded")
+            await asyncio.sleep(2)
 
-                raw_text = await container.inner_text()
-                result = _parse_lineup_text(raw_text)
+            container = await page.query_selector('[class*="MatchLineupsContainer"]')
+            if not container:
+                logger.info("BBC 라인업 컨테이너 없음: %s", match_url)
+                return False
 
-                if not result:
-                    logger.info("BBC 라인업 파싱 실패: %s", match_url)
-                    return False
+            raw_text = await container.inner_text()
+            result = _parse_lineup_text(raw_text)
+            if not result:
+                logger.info("BBC 라인업 파싱 실패: %s", match_url)
+                return False
 
-                result["kickoff_kst"] = kickoff_kst
-                _lineup_cache[uid] = result
-                logger.info("BBC 라인업 캐시 저장: uid=%s, home=%s, away=%s",
-                            uid, result["home_name"], result["away_name"])
-                return True
+            result["kickoff_kst"] = kickoff_kst
+            _lineup_cache[uid] = result
+            logger.info("BBC 라인업 캐시 저장: uid=%s, home=%s, away=%s",
+                        uid, result["home_name"], result["away_name"])
+            return True
 
-            finally:
-                await browser.close()
+        finally:
+            await context.close()
 
     except Exception as e:
         logger.warning("BBC 라인업 스크래핑 실패: %s %s", type(e).__name__, e)

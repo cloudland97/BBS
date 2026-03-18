@@ -64,6 +64,7 @@ from utils import (
     scrape_bbc_lineup,
     scrape_injuries,
 )
+from utils.playwright_manager import init_browser, close_browser
 
 logging.basicConfig(
     level=logging.INFO,
@@ -229,6 +230,7 @@ async def on_ready():
             bot.http_session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30)
             )
+        await init_browser()
         ensure_json_files()
 
         for load_fn, save_fn in [
@@ -710,6 +712,7 @@ async def on_close():
     if hasattr(bot, "http_session") and bot.http_session and not bot.http_session.closed:
         await bot.http_session.close()
         bot.http_session = None
+    await close_browser()
 
 
 # =========================================================

@@ -19,25 +19,22 @@ async def scrape_injuries() -> list[dict]:
     if _injury_cache and now - _injury_cache["ts"] < INJURY_CACHE_TTL:
         return _injury_cache["data"]
 
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        logger.warning("playwright 미설치")
-        return []
+    from utils.playwright_manager import get_browser
 
     url = "https://www.premierinjuries.com/injury-table.php"
     injuries = []
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(extra_http_headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            })
+        browser = await get_browser()
+        page = await browser.new_page(extra_http_headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
             content = await page.content()
-            await browser.close()
+        finally:
+            await page.close()
     except Exception as e:
         logger.error("injury page 로드 실패: %s %s", type(e).__name__, e)
         return []

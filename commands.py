@@ -499,6 +499,93 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         except Exception as e:
             await reply_error(interaction, e)
 
+    @app_commands.default_permissions(administrator=True)
+    @bot.tree.command(name="bbtest", description="[관리자] 전체 커맨드 일괄 테스트")
+    async def bbtest(interaction: discord.Interaction):
+        if interaction.guild and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 관리자 전용", ephemeral=True)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+        async def _run(label: str, coro):
+            try:
+                result = await coro
+                return f"**[BBTEST용 {label}]**\n{result}"
+            except Exception as e:
+                return f"**[BBTEST용 {label}]** ❌ {type(e).__name__}: {e}"
+
+        # /bbtt
+        async def _bbtt():
+            spurs_bytes, recent = await asyncio.gather(
+                fetch_ics_bytes_cached(SPURS_ICS_URL),
+                fetch_spurs_recent_matches(1),
+            )
+            parts = []
+            if recent:
+                parts.append(format_previous_result(recent[0]))
+            ev = find_next_event(parse_events(spurs_bytes))
+            if ev:
+                t = ev["start_kst"].strftime("%Y-%m-%d (%a) %H:%M")
+                parts.append(f"⚽ **다음 경기**\n**{ev['summary']}**\n시작: {t} (KST)")
+            return "\n\n".join(parts) or "일정 없음"
+
+        # /bbf1
+        async def _bbf1():
+            f1_bytes = await fetch_ics_bytes_cached(F1_ICS_URL)
+            gp_name, sessions = find_next_gp_sessions(parse_events(f1_bytes))
+            return fmt_bbf1(gp_name, sessions) if gp_name else "F1 일정 없음"
+
+        # /bblineup
+        async def _bblineup():
+            spurs_bytes = await fetch_ics_bytes_cached(SPURS_ICS_URL)
+            ev = find_next_event(parse_events(spurs_bytes))
+            if not ev:
+                return "다음 경기 없음"
+            fd_match = await find_fd_match_cached(ev["start_kst"])
+            if not fd_match:
+                return "football-data.org 경기 없음"
+            lineup_data = await fetch_fd_lineups(fd_match["id"])
+            home_xi = lineup_data.get("homeTeam", {}).get("startingXI")
+            away_xi = lineup_data.get("awayTeam", {}).get("startingXI")
+            if not home_xi and not away_xi:
+                t = ev["start_kst"].strftime("%m/%d (%a) %H:%M")
+                return f"⏳ 라인업 미발표\n**{ev['summary']}** | {t} KST"
+            return format_lineup_message_full(fd_match, lineup_data)
+
+        # /bbmk
+        async def _bbmk():
+            data = await fetch_market_data()
+            return format_market_message(data, "BBTEST 즉시 조회")
+
+        # /bbark
+        async def _bbark():
+            data = await fetch_ark_trades()
+            return format_ark_message(data)
+
+        # /bbinjury
+        async def _bbinjury():
+            injuries = await scrape_injuries()
+            return format_injury_message(injuries)
+
+        tests = [
+            ("/bbtt",      _bbtt()),
+            ("/bbf1",      _bbf1()),
+            ("/bblineup",  _bblineup()),
+            ("/bbmk",      _bbmk()),
+            ("/bbark",     _bbark()),
+            ("/bbinjury",  _bbinjury()),
+        ]
+
+        for label, coro in tests:
+            msg = await _run(label, coro)
+            # Discord 메시지 2000자 제한 대응
+            if len(msg) > 1900:
+                msg = msg[:1900] + "\n…(생략)"
+            await interaction.followup.send(msg, ephemeral=True)
+
     @bot.tree.command(name="bbhelp", description="사용 가능한 모든 명령어를 보여줍니다")
     async def bbhelp(interaction: discord.Interaction):
         if not await ensure_server_channel_or_dm(interaction):

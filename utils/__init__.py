@@ -49,6 +49,8 @@ from utils.market import (
     add_market_subscriber,
     remove_market_subscriber,
     get_market_subscribers,
+    get_market_subscribers_for_time,
+    get_market_subscriber_mode,
     is_market_subscriber,
     load_market_notified,
     save_market_notified,
@@ -121,7 +123,8 @@ __all__ = [
     "format_standings_mini",
     # market
     "add_market_subscriber", "remove_market_subscriber",
-    "get_market_subscribers", "is_market_subscriber",
+    "get_market_subscribers", "get_market_subscribers_for_time", "get_market_subscriber_mode",
+    "is_market_subscriber",
     "load_market_notified", "save_market_notified", "cleanup_market_notified",
     "get_nasdaq_open_kst", "get_nasdaq_close_kst",
     "fetch_market_data", "format_market_message",

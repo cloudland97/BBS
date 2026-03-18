@@ -10,6 +10,7 @@ from config import SPURS_ICS_URL, F1_ICS_URL, FOOTBALL_DATA_TEAM_ID
 from utils import (
     add_ark_subscriber,
     add_market_subscriber,
+    get_market_subscriber_mode,
     add_subscriber,
     fetch_ark_trades,
     fetch_fd_h2h,
@@ -237,7 +238,9 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         app_commands.Choice(name="전체 (경기 + 시황 + ARK)", value="all"),
         app_commands.Choice(name="토트넘만", value="spurs"),
         app_commands.Choice(name="F1만", value="f1"),
-        app_commands.Choice(name="시황 알림", value="market"),
+        app_commands.Choice(name="시황 전체 (한국+미국)", value="market"),
+        app_commands.Choice(name="시황 한국증시만", value="market_kr"),
+        app_commands.Choice(name="시황 미국증시만", value="market_us"),
         app_commands.Choice(name="캐시우드 (ARK)", value="ark"),
     ])
     async def bbup(interaction: discord.Interaction, 종목: app_commands.Choice[str] = None):
@@ -248,7 +251,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
 
         if mode == "all":
             add_subscriber(interaction.user.id, "all")
-            add_market_subscriber(interaction.user.id)
+            add_market_subscriber(interaction.user.id, "all")
             add_ark_subscriber(interaction.user.id)
             await interaction.response.send_message(
                 "✅ 전체 알림 구독 완료 (경기 + 시황 + ARK)\n"
@@ -258,10 +261,24 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                 ephemeral=True,
             )
         elif mode == "market":
-            add_market_subscriber(interaction.user.id)
+            add_market_subscriber(interaction.user.id, "all")
             await interaction.response.send_message(
-                "✅ 시황 알림 구독 완료\n"
+                "✅ 시황 알림 구독 완료 (한국+미국 전체)\n"
                 "매일 09:00 / 15:30 / 나스닥 개·폐장 시 DM으로 시황 브리핑을 보내줄게.",
+                ephemeral=True,
+            )
+        elif mode == "market_kr":
+            add_market_subscriber(interaction.user.id, "kr")
+            await interaction.response.send_message(
+                "✅ 시황 알림 구독 완료 (한국증시만)\n"
+                "매일 09:00 코스피 개장 / 15:30 코스피 마감 시 DM으로 브리핑을 보내줄게.",
+                ephemeral=True,
+            )
+        elif mode == "market_us":
+            add_market_subscriber(interaction.user.id, "us")
+            await interaction.response.send_message(
+                "✅ 시황 알림 구독 완료 (미국증시만)\n"
+                "나스닥 개장 / 마감 시 DM으로 브리핑을 보내줄게.",
                 ephemeral=True,
             )
         elif mode == "ark":
@@ -446,7 +463,9 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         is_ark  = is_ark_subscriber(user_id)
 
         sports_status = f"✅ 구독 중 ({MODE_LABELS.get(mode, mode)})" if mode else "❌ 미구독"
-        market_status = "✅ 구독 중" if is_mkt else "❌ 미구독"
+        MKT_LABELS = {"all": "한국+미국", "kr": "한국증시만", "us": "미국증시만"}
+        mkt_mode = get_market_subscriber_mode(user_id)
+        market_status = f"✅ 구독 중 ({MKT_LABELS.get(mkt_mode, mkt_mode)})" if is_mkt else "❌ 미구독"
         ark_status    = "✅ 구독 중" if is_ark  else "❌ 미구독"
 
         msg = (

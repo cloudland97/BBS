@@ -23,30 +23,46 @@ logger = logging.getLogger(__name__)
 
 # =========================================================
 # MARKET SUBSCRIBERS
+# mode: "all" | "kr" | "us"
 # =========================================================
 def load_market_subscribers() -> dict:
-    return _load_json(MARKET_SUB_PATH, {"users": []})
+    data = _load_json(MARKET_SUB_PATH, {"users": {}})
+    # 하위호환: list → dict 마이그레이션
+    if isinstance(data.get("users"), list):
+        data["users"] = {u: "all" for u in data["users"]}
+        _save_json(MARKET_SUB_PATH, data)
+    return data
 
 
-def add_market_subscriber(user_id: int):
+def add_market_subscriber(user_id: int, mode: str = "all"):
     data = load_market_subscribers()
-    if str(user_id) not in data["users"]:
-        data["users"].append(str(user_id))
+    data["users"][str(user_id)] = mode
     _save_json(MARKET_SUB_PATH, data)
 
 
 def remove_market_subscriber(user_id: int):
     data = load_market_subscribers()
-    data["users"] = [u for u in data["users"] if u != str(user_id)]
+    data["users"].pop(str(user_id), None)
     _save_json(MARKET_SUB_PATH, data)
 
 
+def get_market_subscribers_for_time(time_type: str) -> list[int]:
+    """time_type: 'kr' or 'us' — 해당 시간대를 구독 중인 user_id 목록."""
+    users = load_market_subscribers().get("users", {})
+    return [int(uid) for uid, mode in users.items() if mode in ("all", time_type)]
+
+
+def get_market_subscriber_mode(user_id: int) -> str | None:
+    return load_market_subscribers().get("users", {}).get(str(user_id))
+
+
 def get_market_subscribers() -> list[int]:
-    return [int(u) for u in load_market_subscribers().get("users", [])]
+    """전체 시황 구독자 (하위호환용)."""
+    return [int(u) for u in load_market_subscribers().get("users", {}).keys()]
 
 
 def is_market_subscriber(user_id: int) -> bool:
-    return str(user_id) in load_market_subscribers().get("users", [])
+    return str(user_id) in load_market_subscribers().get("users", {})
 
 
 # =========================================================

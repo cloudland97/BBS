@@ -44,6 +44,7 @@ from utils import (
     get_ark_subscribers,
     get_cached_lineup,
     get_market_subscribers,
+    get_market_subscribers_for_time,
     get_nasdaq_close_kst,
     get_nasdaq_open_kst,
     get_subscribers_for_source,
@@ -610,6 +611,8 @@ async def market_loop():
     nasdaq_open  = get_nasdaq_open_kst()
     nasdaq_close = get_nasdaq_close_kst()
 
+    KR_TIMES = {"09:00", "15:30"}
+
     alert_times = {
         "09:00":      "코스피 개장",
         "15:30":      "코스피 마감",
@@ -634,11 +637,13 @@ async def market_loop():
             data = await fetch_market_data()
             msg  = format_market_message(data, label)
 
-            await _send_dms(get_market_subscribers(), msg, "시황")
+            time_type = "kr" if alert_hm in KR_TIMES else "us"
+            uids = get_market_subscribers_for_time(time_type)
+            await _send_dms(uids, msg, "시황")
 
             notified[state_key] = True
             save_market_notified(notified)
-            logger.info("시황 알림 발송: %s (%s)", label, alert_hm)
+            logger.info("시황 알림 발송: %s (%s) → %d명", label, alert_hm, len(uids))
         except Exception as e:
             logger.error("market_loop 발송 실패: %s %s", type(e).__name__, e)
 

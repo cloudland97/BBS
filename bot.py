@@ -189,29 +189,44 @@ async def _send_dms(uids: list[int], msg: str, label: str):
 
 
 async def _lineup_suffix(kickoff: datetime, source: str, uid: str = "") -> str:
-    """DM 알림용 단축 라인업. 라인업 미확정이면 빈 문자열 반환."""
+    """DM 알림용 단축 라인업 + 부상자. 라인업 미확정이면 빈 문자열 반환."""
     if source != "spurs":
         return ""
+
+    lineup_text = ""
+
     # 1. BBC 캐시 확인
     if uid:
         cached = get_cached_lineup(uid)
         if cached:
-            return "\n\n" + format_bbc_lineup_message(cached)
+            lineup_text = "\n\n" + format_bbc_lineup_message(cached)
+
     # 2. football-data.org 시도
-    try:
-        fd_match = await find_fd_match_cached(kickoff)
-        if not fd_match:
-            return ""
-        match_id = fd_match["id"]
-        is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
-        lineup_data = await fetch_fd_lineups(match_id)
-        side = "homeTeam" if is_home else "awayTeam"
-        if not lineup_data.get(side, {}).get("startingXI"):
-            return ""
-        return "\n\n" + format_lineup_message(fd_match, lineup_data, is_home)
-    except Exception as e:
-        logger.warning("lineup_suffix 실패: %s %s", type(e).__name__, e)
+    if not lineup_text:
+        try:
+            fd_match = await find_fd_match_cached(kickoff)
+            if fd_match:
+                match_id = fd_match["id"]
+                is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
+                lineup_data = await fetch_fd_lineups(match_id)
+                side = "homeTeam" if is_home else "awayTeam"
+                if lineup_data.get(side, {}).get("startingXI"):
+                    lineup_text = "\n\n" + format_lineup_message(fd_match, lineup_data, is_home)
+        except Exception as e:
+            logger.warning("lineup_suffix 실패: %s %s", type(e).__name__, e)
+
+    if not lineup_text:
         return ""
+
+    # 라인업 있을 때만 부상자 추가
+    try:
+        injuries = await scrape_injuries()
+        if injuries:
+            lineup_text += "\n\n" + format_injury_message(injuries)
+    except Exception as e:
+        logger.warning("injury_suffix 실패: %s %s", type(e).__name__, e)
+
+    return lineup_text
 
 
 async def _h2h_suffix(kickoff: datetime, source: str) -> str:
@@ -405,15 +420,11 @@ async def notify_loop():
             uids = get_subscribers_for_source(source)
 
             async def _d1_suffix(start=start, source=source):
-                ob, h2h, injuries = await asyncio.gather(
+                ob, h2h = await asyncio.gather(
                     _opponent_brief_suffix(start, source),
                     _h2h_suffix(start, source),
-                    scrape_injuries() if source == "spurs" else asyncio.sleep(0),
                 )
-                suffix = ob + h2h
-                if source == "spurs" and isinstance(injuries, list) and injuries:
-                    suffix += "\n\n" + format_injury_message(injuries)
-                return suffix
+                return ob + h2h
 
             async def _pre_suffix(start=start, source=source, ev_uid=ev["uid"]):
                 return await _lineup_suffix(start, source, uid=ev_uid)

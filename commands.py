@@ -161,12 +161,13 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                 match_id = fd_match["id"]
                 is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
 
-                # 상대 현황 + 순위표 + 라인업 + H2H 병렬 호출
-                opp_row, standings_result, lineup_data, h2h_data = await asyncio.gather(
+                # 상대 현황 + 순위표 + 라인업 + H2H + 부상자 병렬 호출
+                opp_row, standings_result, lineup_data, h2h_data, injuries = await asyncio.gather(
                     fetch_opponent_standing(fd_match),
                     fetch_standings_mini(fd_match),
                     fetch_fd_lineups(match_id),
                     fetch_fd_h2h(match_id),
+                    scrape_injuries(),
                 )
                 mini_table, spurs_pos = standings_result
 
@@ -178,10 +179,12 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                 if mini_table:
                     msg_parts.append(format_standings_mini(mini_table, spurs_pos))
 
-                # 라인업 확정 시 단축 버전 표시
+                # 라인업 확정 시 풀 라인업 표시
                 side = "homeTeam" if is_home else "awayTeam"
                 if lineup_data.get(side, {}).get("startingXI"):
-                    msg_parts.append(format_lineup_message(fd_match, lineup_data, is_home))
+                    msg_parts.append(format_lineup_message_full(fd_match, lineup_data))
+                    if injuries:
+                        msg_parts.append(format_injury_message(injuries))
 
                 # H2H
                 h2h_text = format_h2h_message(h2h_data)
@@ -538,23 +541,6 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             gp_name, sessions = find_next_gp_sessions(parse_events(f1_bytes))
             return fmt_bbf1(gp_name, sessions) if gp_name else "F1 일정 없음"
 
-        # /bblineup
-        async def _bblineup():
-            spurs_bytes = await fetch_ics_bytes_cached(SPURS_ICS_URL)
-            ev = find_next_event(parse_events(spurs_bytes))
-            if not ev:
-                return "다음 경기 없음"
-            fd_match = await find_fd_match_cached(ev["start_kst"])
-            if not fd_match:
-                return "football-data.org 경기 없음"
-            lineup_data = await fetch_fd_lineups(fd_match["id"])
-            home_xi = lineup_data.get("homeTeam", {}).get("startingXI")
-            away_xi = lineup_data.get("awayTeam", {}).get("startingXI")
-            if not home_xi and not away_xi:
-                t = ev["start_kst"].strftime("%m/%d (%a) %H:%M")
-                return f"⏳ 라인업 미발표\n**{ev['summary']}** | {t} KST"
-            return format_lineup_message_full(fd_match, lineup_data)
-
         # /bbmk
         async def _bbmk():
             data = await fetch_market_data()
@@ -565,18 +551,11 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             data = await fetch_ark_trades()
             return format_ark_message(data)
 
-        # /bbinjury
-        async def _bbinjury():
-            injuries = await scrape_injuries()
-            return format_injury_message(injuries)
-
         tests = [
-            ("/bbtt",      _bbtt()),
-            ("/bbf1",      _bbf1()),
-            ("/bblineup",  _bblineup()),
-            ("/bbmk",      _bbmk()),
-            ("/bbark",     _bbark()),
-            ("/bbinjury",  _bbinjury()),
+            ("/bbtt",  _bbtt()),
+            ("/bbf1",  _bbf1()),
+            ("/bbmk",  _bbmk()),
+            ("/bbark", _bbark()),
         ]
 
         for label, coro in tests:

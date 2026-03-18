@@ -560,10 +560,32 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
 
         for label, coro in tests:
             msg = await _run(label, coro)
-            # Discord 메시지 2000자 제한 대응
             if len(msg) > 1900:
                 msg = msg[:1900] + "\n…(생략)"
             await interaction.followup.send(msg, ephemeral=True)
+
+        # /bbdm — 명령어 친 사람에게만 DM 발송
+        try:
+            mode   = get_subscriber_mode(interaction.user.id)
+            is_mkt = is_market_subscriber(interaction.user.id)
+            is_ark = is_ark_subscriber(interaction.user.id)
+            if not mode and not is_mkt and not is_ark:
+                await interaction.followup.send(
+                    "**[BBTEST용 /bbdm]**\n⚠️ 구독 중인 알림 없음 (bbup 미구독 상태)",
+                    ephemeral=True,
+                )
+            else:
+                mkt_data, ark_data = await asyncio.gather(
+                    fetch_market_data() if is_mkt else asyncio.sleep(0),
+                    fetch_ark_trades()  if is_ark else asyncio.sleep(0),
+                )
+                if is_mkt:
+                    await interaction.user.send("[BBTEST용 /bbdm]\n" + format_market_message(mkt_data, "즉시 브리핑"))
+                if is_ark:
+                    await interaction.user.send("[BBTEST용 /bbdm]\n" + format_ark_message(ark_data))
+                await interaction.followup.send("**[BBTEST용 /bbdm]** ✅ DM 발송 완료", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"**[BBTEST용 /bbdm]** ❌ {type(e).__name__}: {e}", ephemeral=True)
 
     @bot.tree.command(name="bbhelp", description="사용 가능한 모든 명령어를 보여줍니다")
     async def bbhelp(interaction: discord.Interaction):

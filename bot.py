@@ -12,7 +12,9 @@ from utils import (
     cleanup_ark_notified,
     cleanup_market_notified,
     cleanup_old_state,
+    clear_old_lineup_cache,
     ensure_json_files,
+    extract_opponent,
     fetch_ark_trades,
     fetch_fd_h2h,
     fetch_fd_lineups,
@@ -31,12 +33,14 @@ from utils import (
     f1_session_label,
     f1_session_short,
     format_ark_message,
+    format_bbc_lineup_message,
     format_h2h_message,
     format_lineup_message,
     format_market_message,
     format_opponent_brief,
     format_result_message,
     get_ark_subscribers,
+    get_cached_lineup,
     get_market_subscribers,
     get_nasdaq_close_kst,
     get_nasdaq_open_kst,
@@ -54,7 +58,7 @@ from utils import (
     save_market_notified,
     save_result_state,
     save_state,
-    extract_opponent,
+    scrape_bbc_lineup,
 )
 
 logging.basicConfig(
@@ -135,10 +139,16 @@ async def _send_dms(uids: list[int], msg: str, label: str):
             logger.warning("%s DM 실패 (%s): %s %s", label, uid, type(e).__name__, e)
 
 
-async def _lineup_suffix(kickoff: datetime, source: str) -> str:
+async def _lineup_suffix(kickoff: datetime, source: str, uid: str = "") -> str:
     """DM 알림용 단축 라인업. 라인업 미확정이면 빈 문자열 반환."""
     if source != "spurs":
         return ""
+    # 1. BBC 캐시 확인
+    if uid:
+        cached = get_cached_lineup(uid)
+        if cached:
+            return "\n\n" + format_bbc_lineup_message(cached)
+    # 2. football-data.org 시도
     try:
         fd_match = await find_fd_match_cached(kickoff)
         if not fd_match:
@@ -219,10 +229,15 @@ async def on_ready():
         logger.info("로그인 완료: %s", bot.user)
         await update_presence()
 
+        # 오래된 BBC 라인업 캐시 정리
+        clear_old_lineup_cache(datetime.now(KST) - timedelta(days=1))
+
         if not notify_loop.is_running():
             notify_loop.start()
         if not lineup_loop.is_running():
             lineup_loop.start()
+        if not lineup_prefetch_loop.is_running():
+            lineup_prefetch_loop.start()
         if not result_loop.is_running():
             result_loop.start()
         if not market_loop.is_running():
@@ -272,8 +287,8 @@ async def notify_loop():
                 )
                 return ob + h2h
 
-            async def _pre_suffix(start=start, source=source):
-                return await _lineup_suffix(start, source)
+            async def _pre_suffix(start=start, source=source, ev_uid=ev["uid"]):
+                return await _lineup_suffix(start, source, uid=ev_uid)
 
             slots = [
                 ("d-1",  start - timedelta(hours=24),   "⏰ D-1 알림",    _d1_suffix),
@@ -324,31 +339,43 @@ async def lineup_loop():
             state_key = f"spurs_lineup:{spurs_next['uid']}:{kickoff.isoformat()}"
 
             if not lineup_state.get(state_key):
-                try:
-                    fd_match = await find_fd_match_cached(kickoff)
-                except Exception as e:
-                    logger.warning("football-data match 조회 실패: %s %s", type(e).__name__, e)
-                    fd_match = None
+                msg = None
 
-                if fd_match:
-                    match_id = fd_match["id"]
-                    is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
+                # 1. BBC 캐시 확인
+                cached = get_cached_lineup(spurs_next["uid"])
+                if cached:
+                    msg = format_bbc_lineup_message(cached)
+                    logger.info("BBC 캐시 라인업 사용: %s", spurs_next["summary"])
 
+                # 2. 캐시 없으면 football-data.org 시도
+                if not msg:
                     try:
-                        lineup_data = await fetch_fd_lineups(match_id)
+                        fd_match = await find_fd_match_cached(kickoff)
                     except Exception as e:
-                        logger.warning("lineup fetch 실패: %s %s", type(e).__name__, e)
-                        lineup_data = {}
+                        logger.warning("football-data match 조회 실패: %s %s", type(e).__name__, e)
+                        fd_match = None
 
-                    side = "homeTeam" if is_home else "awayTeam"
-                    if lineup_data.get(side, {}).get("startingXI"):
-                        msg = format_lineup_message(fd_match, lineup_data, is_home)
-                        await send_to_all_guild_channels(msg)
-                        await _send_dms(get_subscribers_for_source("spurs"), msg, "lineup")
+                    if fd_match:
+                        match_id = fd_match["id"]
+                        is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
 
-                        lineup_state[state_key] = True
-                        save_lineup_state(lineup_state)
-                        logger.info("라인업 알림 발송: %s", spurs_next["summary"])
+                        try:
+                            lineup_data = await fetch_fd_lineups(match_id)
+                        except Exception as e:
+                            logger.warning("lineup fetch 실패: %s %s", type(e).__name__, e)
+                            lineup_data = {}
+
+                        side = "homeTeam" if is_home else "awayTeam"
+                        if lineup_data.get(side, {}).get("startingXI"):
+                            msg = format_lineup_message(fd_match, lineup_data, is_home)
+
+                if msg:
+                    await send_to_all_guild_channels(msg)
+                    await _send_dms(get_subscribers_for_source("spurs"), msg, "lineup")
+
+                    lineup_state[state_key] = True
+                    save_lineup_state(lineup_state)
+                    logger.info("라인업 알림 발송: %s", spurs_next["summary"])
 
     except Exception as e:
         logger.error("lineup_loop error: %s %s", type(e).__name__, e)
@@ -362,6 +389,55 @@ async def before_lineup_loop():
 @lineup_loop.error
 async def on_lineup_loop_error(error: Exception):
     logger.error("lineup_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
+
+
+# =========================================================
+# LINEUP PREFETCH LOOP (BBC Sport)
+# =========================================================
+@tasks.loop(seconds=300)
+async def lineup_prefetch_loop():
+    """킥오프 61분 전에 BBC Sport 라인업 미리 스크래핑."""
+    now = datetime.now(KST)
+
+    try:
+        spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
+        spurs_next = find_next_event(parse_events(spurs_ics))
+
+        if not spurs_next:
+            return
+
+        kickoff = spurs_next["start_kst"]
+        uid = spurs_next["uid"]
+        diff = kickoff - now
+
+        # 윈도우: T-90min ~ T-61min
+        if not (timedelta(minutes=61) <= diff <= timedelta(minutes=90)):
+            return
+
+        # 이미 캐시에 있으면 스킵
+        if get_cached_lineup(uid):
+            return
+
+        opponent = extract_opponent(spurs_next["summary"])
+        success = await scrape_bbc_lineup(uid, kickoff, opponent)
+
+        if success:
+            logger.info("BBC 라인업 프리페치 성공: %s vs %s", "Spurs", opponent)
+        else:
+            logger.info("BBC 라인업 프리페치 실패: %s vs %s", "Spurs", opponent)
+
+    except Exception as e:
+        logger.error("lineup_prefetch_loop error: %s %s", type(e).__name__, e)
+
+
+@lineup_prefetch_loop.before_loop
+async def before_lineup_prefetch_loop():
+    await bot.wait_until_ready()
+
+
+@lineup_prefetch_loop.error
+async def on_lineup_prefetch_loop_error(error: Exception):
+    logger.error("lineup_prefetch_loop 예외 (루프 중단): %s %s", type(error).__name__, error)
 
 
 # =========================================================

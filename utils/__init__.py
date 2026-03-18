@@ -70,6 +70,13 @@ from utils.ark import (
     format_ark_message,
 )
 
+from utils.lineup_scraper import (
+    scrape_bbc_lineup,
+    get_cached_lineup,
+    clear_old_lineup_cache,
+    format_bbc_lineup_message,
+)
+
 __all__ = [
     # storage
     "ensure_json_files",
@@ -116,4 +123,7 @@ __all__ = [
     "get_ark_subscribers", "is_ark_subscriber",
     "load_ark_notified", "save_ark_notified", "cleanup_ark_notified",
     "fetch_ark_trades", "format_ark_message",
+    # lineup_scraper
+    "scrape_bbc_lineup", "get_cached_lineup",
+    "clear_old_lineup_cache", "format_bbc_lineup_message",
 ]

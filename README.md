@@ -1,6 +1,7 @@
 # BBS - BetterBotSpurs
 
-토트넘 홋스퍼 + F1 경기 알림 디스코드 봇
+스포츠 알림 + 시황/ETF 브리핑 디스코드 봇
+토트넘 홋스퍼 · F1 경기 알림, 글로벌 시황 브리핑, ARK ETF 매매 내역을 DM으로 받아볼 수 있습니다.
 
 ---
 
@@ -10,6 +11,8 @@
 - 30분 전 / 10분 전 DM에 **공식 선발 라인업** 포함
 - **F1 세션 알림** (프리 프랙티스 / 예선 / 스프린트 / 본경기 구분)
 - 경기 종료 후 **결과 자동 채널 발송**
+- **글로벌 시황 브리핑** (환율 · 증시 · 코인 · 원자재 · VIX · 공포탐욕지수 · 기준금리)
+- **ARK ETF 매매 내역** 매일 07:00 KST 자동 DM
 - 봇 상태창에 **다음 토트넘 + F1 일정** 표시
 - **멀티서버** 지원
 
@@ -23,9 +26,12 @@
 | `/bbtt` | 이전 결과 + 다음 경기 + 최근 폼 + H2H |
 | `/bblineup` | 다음 경기 양 팀 풀 라인업 |
 | `/bbf1` | F1 다음 GP 전체 세션 일정 |
-| `/bbup` | DM 알림 구독 (토트넘 / F1 / 전체) |
-| `/bbdown` | DM 알림 구독 해제 |
-| `/bbtest` | DM 테스트 발송 |
+| `/bbmk` | 글로벌 시황 즉시 조회 (환율·증시·코인·원자재) |
+| `/bbark` | ARK 전 펀드 최근 거래일 매매 내역 조회 |
+| `/bbup` | DM 알림 구독 (토트넘 / F1 / 시황 / ARK / 전체) |
+| `/bbdown` | DM 알림 전체 해제 |
+| `/bbdm` | 구독 중인 알림 즉시 DM 수신 |
+| `/bblist` | 내 구독 현황 확인 |
 | `/bbhelp` | 명령어 전체 안내 |
 
 ---
@@ -33,16 +39,19 @@
 ## 파일 구조
 
 ```
-bot.py          — 봇 진입점, on_ready, 알림 루프
-commands.py     — 슬래시 커맨드
-config.py       — 환경변수, 상수
+bot.py              — 봇 진입점, on_ready, 알림 루프
+commands.py         — 슬래시 커맨드
+config.py           — 환경변수, 상수
+sync_commands.py    — 슬래시 커맨드 강제 동기화 스크립트
 utils/
-  __init__.py   — re-export (외부 import 진입점)
-  storage.py    — JSON 상태 관리
-  ics.py        — ICS 파싱 + F1 헬퍼
-  football_data.py — football-data.org API + 캐시
-  formatters.py — 메시지 포맷 함수
-run.bat         — 윈도우 실행 스크립트
+  __init__.py       — re-export (외부 import 진입점)
+  storage.py        — JSON 상태 관리
+  ics.py            — ICS 파싱 + F1 헬퍼
+  football_data.py  — football-data.org API + 캐시
+  formatters.py     — 메시지 포맷 함수
+  market.py         — 시황 데이터 fetch + 포맷
+  ark.py            — ARK ETF 데이터 fetch + 포맷
+run.bat             — Windows 전용 실행 스크립트 (로그 자동 저장)
 ```
 
 ---
@@ -53,9 +62,11 @@ run.bat         — 윈도우 실행 스크립트
 # 패키지 설치
 pip install -r requirements.txt
 
-# 실행
+# 실행 (Linux/macOS)
 python bot.py
-# 또는 윈도우에서 run.bat 더블클릭
+
+# 실행 (Windows) — run.bat 더블클릭
+# 로그가 logs/bot_YYYY-MM-DD.txt 에 자동 저장됨
 ```
 
 ---
@@ -117,6 +128,18 @@ lineup_sent.json / result_sent.json
 ---
 
 ### Phase 3 — Claude (2026-03-11)
+
+#### v1.4 (2026-03-18)
+- **코드 품질 전반 개선**
+  - `storage.py` JSON 원자적 쓰기 (`os.replace`) — 쓰다 크래시 나도 파일 보존
+  - `_load_json`/`_save_json` 공용화 — market/ark 중복 제거
+  - `notify_loop` 클로저 버그 수정 (기본 인자 바인딩)
+  - `market_loop`/`ark_loop` 정각 매칭 → 범위 비교(±2분), 간격 60s → 30s
+  - 공유 `aiohttp.ClientSession` 도입 (`on_ready` 생성, `on_close` 해제)
+- **인터랙션 안정성**: `bbtt`/`bbf1`/`bblineup`/`bbmk`/`bbark` defer 만료(10062) 처리 추가
+- **run.bat**: `PYTHONIOENCODING=utf-8` 설정 — 이모지/한글 로그 인코딩 오류 수정
+- **GUILD_ID 제거**: 글로벌 커맨드 등록으로 전환 (전체 서버 지원)
+- **README**: 시황·ARK 기능 반영, 파일 구조 보완, run.bat Windows 명시
 
 #### v1.3 (2026-03-16)
 - **시황 가시성 개선**: 색상 점(🟢🟡⚪🟠🔴) 시스템 추가

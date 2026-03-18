@@ -112,16 +112,25 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
     @bot.tree.command(name="bbset", description="이 채널을 이 서버의 봇 전용 채널로 설정합니다")
     async def bbset(interaction: discord.Interaction):
         if interaction.guild is None:
-            await interaction.response.send_message("❌ `/bbset`은 서버 채널에서만 사용할 수 있어.", ephemeral=True)
+            try:
+                await interaction.response.send_message("❌ `/bbset`은 서버 채널에서만 사용할 수 있어.", ephemeral=True)
+            except (discord.NotFound, discord.HTTPException):
+                pass
             return
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 이 명령어는 관리자만 사용할 수 있어.", ephemeral=True)
+            try:
+                await interaction.response.send_message("❌ 이 명령어는 관리자만 사용할 수 있어.", ephemeral=True)
+            except (discord.NotFound, discord.HTTPException):
+                pass
             return
 
         set_guild_channel(interaction.guild.id, interaction.channel_id)
-        await interaction.response.send_message(
-            f"✅ 이 채널을 봇 전용 채널로 설정했어.\n이제 이 서버에서는 {interaction.channel.mention} 에서만 명령어가 동작해."
-        )
+        try:
+            await interaction.response.send_message(
+                f"✅ 이 채널을 봇 전용 채널로 설정했어.\n이제 이 서버에서는 {interaction.channel.mention} 에서만 명령어가 동작해."
+            )
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
     @bot.tree.command(name="bbtt", description="토트넘 이전 결과 / 다음 경기 / 최근 폼")
     async def bbtt(interaction: discord.Interaction):

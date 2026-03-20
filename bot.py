@@ -157,7 +157,7 @@ async def _send_dms(uids: list[int], msg: str, label: str):
     chunks = _split_message(msg)
     for uid in uids:
         try:
-            user = await bot.fetch_user(uid)
+            user = bot.get_user(uid) or await bot.fetch_user(uid)
             for chunk in chunks:
                 await user.send(chunk)
         except Exception as e:

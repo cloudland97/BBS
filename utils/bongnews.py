@@ -1,6 +1,6 @@
 """봉봉뉴스 구독자 관리."""
 
-from config import KST, BONGNEWS_SUB_PATH
+from config import BONGNEWS_SUB_PATH
 from utils.storage import load_json as _load_json, save_json as _save_json
 
 

@@ -172,21 +172,6 @@ async def _fetch_ark_etf_holdings(
         return {}
 
 
-async def _fetch_etf_aum(session: aiohttp.ClientSession, etf: str) -> float:
-    """Yahoo Finance v8 chart에서 price × sharesOutstanding으로 AUM 계산. 실패 시 0.0 반환."""
-    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{etf}?interval=1d&range=1d"
-    try:
-        async with session.get(url, headers=YF_HEADERS) as r:
-            r.raise_for_status()
-            data = await r.json(content_type=None)
-            meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
-            price  = meta.get("regularMarketPrice") or 0.0
-            shares = meta.get("sharesOutstanding") or 0
-            return price * shares
-    except Exception as e:
-        logger.warning("ETF AUM fetch 실패 (%s): %s %s", etf, type(e).__name__, e)
-        return 0.0
-
 
 async def fetch_ark_trades() -> dict:
     """최근 2거래일 전체 ARK 매매 내역 + 현재 보유량/market value 반환."""

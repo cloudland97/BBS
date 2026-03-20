@@ -135,18 +135,19 @@ async def send_to_all_guild_channels(message: str):
 
 
 def _split_message(msg: str, limit: int = 1900) -> list[str]:
-    """메시지를 limit자 이하 청크로 분할 (줄바꿈 기준)."""
+    """메시지를 limit자 이하 청크로 분할. 코드블록(```) 안에서는 분할하지 않음."""
     if len(msg) <= limit:
         return [msg]
-    chunks, current, current_len = [], [], 0
+    chunks, current, current_len, in_code = [], [], 0, False
     for line in msg.split("\n"):
         line_len = len(line) + 1
-        if current_len + line_len > limit and current:
+        if line.startswith("```"):
+            in_code = not in_code
+        if current_len + line_len > limit and current and not in_code:
             chunks.append("\n".join(current))
-            current, current_len = [line], line_len
-        else:
-            current.append(line)
-            current_len += line_len
+            current, current_len = [], 0
+        current.append(line)
+        current_len += line_len
     if current:
         chunks.append("\n".join(current))
     return chunks

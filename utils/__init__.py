@@ -80,10 +80,13 @@ from utils.lineup_scraper import (
     format_bbc_lineup_message,
 )
 
-from utils.injury_scraper import (
-    scrape_injuries,
-    format_injury_message,
+from utils.bongnews import (
+    add_bongnews_subscriber,
+    remove_bongnews_subscriber,
+    get_bongnews_subscribers,
+    is_bongnews_subscriber,
 )
+
 
 __all__ = [
     # storage
@@ -136,6 +139,7 @@ __all__ = [
     # lineup_scraper
     "scrape_bbc_lineup", "get_cached_lineup",
     "clear_old_lineup_cache", "format_bbc_lineup_message",
-    # injury_scraper
-    "scrape_injuries", "format_injury_message",
+    # bongnews
+    "add_bongnews_subscriber", "remove_bongnews_subscriber",
+    "get_bongnews_subscribers", "is_bongnews_subscriber",
 ]

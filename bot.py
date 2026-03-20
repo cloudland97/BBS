@@ -40,7 +40,6 @@ from utils import (
     format_market_message,
     format_opponent_brief,
     format_result_message,
-    format_injury_message,
     get_ark_subscribers,
     get_cached_lineup,
     get_market_subscribers,
@@ -62,7 +61,6 @@ from utils import (
     save_result_state,
     save_state,
     scrape_bbc_lineup,
-    scrape_injuries,
 )
 from utils.playwright_manager import init_browser, close_browser
 
@@ -136,12 +134,32 @@ async def send_to_all_guild_channels(message: str):
             logger.warning("채널 발송 실패 (%s): %s %s", guild_id_str, type(e).__name__, e)
 
 
+def _split_message(msg: str, limit: int = 1900) -> list[str]:
+    """메시지를 limit자 이하 청크로 분할 (줄바꿈 기준)."""
+    if len(msg) <= limit:
+        return [msg]
+    chunks, current, current_len = [], [], 0
+    for line in msg.split("\n"):
+        line_len = len(line) + 1
+        if current_len + line_len > limit and current:
+            chunks.append("\n".join(current))
+            current, current_len = [line], line_len
+        else:
+            current.append(line)
+            current_len += line_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 async def _send_dms(uids: list[int], msg: str, label: str):
-    """구독자 목록에 DM 발송. 실패 시 warning 로그."""
+    """구독자 목록에 DM 발송. 2000자 초과 시 자동 분할. 실패 시 warning 로그."""
+    chunks = _split_message(msg)
     for uid in uids:
         try:
             user = await bot.fetch_user(uid)
-            await user.send(msg)
+            for chunk in chunks:
+                await user.send(chunk)
         except Exception as e:
             logger.warning("%s DM 실패 (%s): %s %s", label, uid, type(e).__name__, e)
 
@@ -172,17 +190,6 @@ async def _lineup_suffix(kickoff: datetime, source: str, uid: str = "") -> str:
                     lineup_text = "\n\n" + format_lineup_message(fd_match, lineup_data, is_home)
         except Exception as e:
             logger.warning("lineup_suffix 실패: %s %s", type(e).__name__, e)
-
-    if not lineup_text:
-        return ""
-
-    # 라인업 있을 때만 부상자 추가
-    try:
-        injuries = await scrape_injuries()
-        if injuries:
-            lineup_text += "\n\n" + format_injury_message(injuries)
-    except Exception as e:
-        logger.warning("injury_suffix 실패: %s %s", type(e).__name__, e)
 
     return lineup_text
 
@@ -380,15 +387,11 @@ async def notify_loop():
             uids = get_subscribers_for_source(source)
 
             async def _d1_suffix(start=start, source=source):
-                ob, h2h, injuries = await asyncio.gather(
+                ob, h2h = await asyncio.gather(
                     _opponent_brief_suffix(start, source),
                     _h2h_suffix(start, source),
-                    scrape_injuries() if source == "spurs" else asyncio.sleep(0),
                 )
-                suffix = ob + h2h
-                if source == "spurs" and isinstance(injuries, list) and injuries:
-                    suffix += "\n\n" + format_injury_message(injuries)
-                return suffix
+                return ob + h2h
 
             async def _pre_suffix(start=start, source=source, ev_uid=ev["uid"]):
                 return await _lineup_suffix(start, source, uid=ev_uid)

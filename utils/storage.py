@@ -56,7 +56,14 @@ def save_json(path: str, data):
     ) as tmp:
         json.dump(data, tmp, ensure_ascii=False, indent=2)
         tmp_path = tmp.name
-    os.replace(tmp_path, path)
+    for attempt in range(5):
+        try:
+            os.replace(tmp_path, path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            import time; time.sleep(0.1)
 
 
 # 하위 호환용 별칭

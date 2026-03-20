@@ -6,6 +6,31 @@ from discord import app_commands
 
 logger = logging.getLogger(__name__)
 
+
+def _split_chunks(msg: str, limit: int = 1900) -> list[str]:
+    if len(msg) <= limit:
+        return [msg]
+    chunks, current, current_len, in_code = [], [], 0, False
+    for line in msg.split("\n"):
+        line_len = len(line) + 1
+        if line.startswith("```"):
+            in_code = not in_code
+        # 코드블록 안에선 분할 금지
+        if current_len + line_len > limit and current and not in_code:
+            chunks.append("\n".join(current))
+            current, current_len = [], 0
+        current.append(line)
+        current_len += line_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+async def _send_long(target, msg: str):
+    """followup 또는 user에 긴 메시지를 분할 전송."""
+    for chunk in _split_chunks(msg):
+        await target.send(chunk)
+
 from config import SPURS_ICS_URL, F1_ICS_URL, FOOTBALL_DATA_TEAM_ID
 from utils import (
     add_ark_subscriber,
@@ -37,15 +62,20 @@ from utils import (
     format_standings_mini,
     get_guild_channel_id,
     get_subscriber_mode,
+    get_subscribers_for_source,
     is_ark_subscriber,
+    is_bongnews_subscriber,
     is_market_subscriber,
     parse_events,
     remove_ark_subscriber,
+    remove_bongnews_subscriber,
     remove_market_subscriber,
     remove_subscriber,
     set_guild_channel,
-    scrape_injuries,
-    format_injury_message,
+    add_bongnews_subscriber,
+    get_bongnews_subscribers,
+    get_ark_subscribers,
+    get_market_subscribers,
 )
 
 
@@ -133,6 +163,73 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         except (discord.NotFound, discord.HTTPException):
             pass
 
+    @app_commands.default_permissions(administrator=True)
+    @bot.tree.command(name="bbnews", description="봉봉뉴스 구독자 전체에게 뉴스 DM 발송 (관리자 전용)")
+    @app_commands.describe(내용="발송할 뉴스 내용")
+    async def bbnews(interaction: discord.Interaction, 내용: str):
+        if interaction.guild is not None and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 관리자만 사용할 수 있어.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        subscribers = get_bongnews_subscribers()
+        if not subscribers:
+            await interaction.followup.send("📭 봉봉뉴스 구독자가 없어.", ephemeral=True)
+            return
+
+        msg = f"📰 **봉봉뉴스**\n\n{내용}"
+        ok, fail = 0, 0
+        for uid in subscribers:
+            try:
+                user = await interaction.client.fetch_user(uid)
+                await user.send(msg)
+                ok += 1
+            except Exception:
+                fail += 1
+
+        await interaction.followup.send(
+            f"✅ 발송 완료 — 성공 {ok}명 / 실패 {fail}명", ephemeral=True
+        )
+
+    @app_commands.default_permissions(administrator=True)
+    @bot.tree.command(name="bbuplist", description="구독 카테고리별 서버 구독자 목록 확인 (관리자 전용)")
+    async def bbuplist(interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("❌ 서버 채널에서만 사용할 수 있어.", ephemeral=True)
+            return
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 관리자만 사용할 수 있어.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        guild = interaction.guild
+
+        async def member_name(uid: int) -> str | None:
+            try:
+                m = guild.get_member(uid) or await guild.fetch_member(uid)
+                return m.display_name
+            except Exception:
+                return None
+
+        categories = {
+            "⚽ 토트넘":   get_subscribers_for_source("spurs"),
+            "🏎️ F1":       get_subscribers_for_source("f1"),
+            "📊 시황":      get_market_subscribers(),
+            "🦆 ARK":      get_ark_subscribers(),
+            "📰 봉봉뉴스": get_bongnews_subscribers(),
+        }
+
+        lines = ["**📋 구독 현황 (이 서버 기준)**\n"]
+        for label, uids in categories.items():
+            names = [n for n in [await member_name(u) for u in uids] if n]
+            if names:
+                lines.append(f"**{label}** ({len(names)}명)\n" + "\n".join(f"  · {n}" for n in names))
+            else:
+                lines.append(f"**{label}** — 없음")
+
+        await interaction.followup.send("\n\n".join(lines), ephemeral=True)
+
     @bot.tree.command(name="bbtt", description="토트넘 이전 결과 / 다음 경기 / 최근 폼")
     async def bbtt(interaction: discord.Interaction):
         if not await ensure_server_channel(interaction):
@@ -171,13 +268,12 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                 match_id = fd_match["id"]
                 is_home = fd_match.get("homeTeam", {}).get("id") == FOOTBALL_DATA_TEAM_ID
 
-                # 상대 현황 + 순위표 + 라인업 + H2H + 부상자 병렬 호출
-                opp_row, standings_result, lineup_data, h2h_data, injuries = await asyncio.gather(
+                # 상대 현황 + 순위표 + 라인업 + H2H 병렬 호출
+                opp_row, standings_result, lineup_data, h2h_data = await asyncio.gather(
                     fetch_opponent_standing(fd_match),
                     fetch_standings_mini(fd_match),
                     fetch_fd_lineups(match_id),
                     fetch_fd_h2h(match_id),
-                    scrape_injuries(),
                 )
                 mini_table, spurs_pos = standings_result
 
@@ -193,8 +289,6 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                 side = "homeTeam" if is_home else "awayTeam"
                 if lineup_data.get(side, {}).get("startingXI"):
                     msg_parts.append(format_lineup_message_full(fd_match, lineup_data))
-                    if injuries:
-                        msg_parts.append(format_injury_message(injuries))
 
                 # H2H
                 h2h_text = format_h2h_message(h2h_data)
@@ -232,6 +326,26 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         except Exception as e:
             await reply_error(interaction, e)
 
+    async def _send_welcome_dm(user: discord.User, mode: str):
+        """bbup 직후 환영 브리핑 DM 발송 (시황/ARK 구독 시)."""
+        send_mkt = mode in ("all", "market", "market_kr", "market_us")
+        send_ark = mode in ("all", "ark")
+        if not send_mkt and not send_ark:
+            return
+        try:
+            mkt_data, ark_data = await asyncio.gather(
+                fetch_market_data() if send_mkt else asyncio.sleep(0),
+                fetch_ark_trades()  if send_ark else asyncio.sleep(0),
+            )
+            if send_mkt:
+                await _send_long(user, format_market_message(mkt_data, "구독 환영 브리핑"))
+            if send_ark:
+                await _send_long(user, format_ark_message(ark_data))
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logger.warning("welcome DM 실패: %s %s", type(e).__name__, e)
+
     @bot.tree.command(name="bbup", description="알림 DM 구독")
     @app_commands.describe(종목="알림 받을 종목 선택 (기본: 전체)")
     @app_commands.choices(종목=[
@@ -242,6 +356,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         app_commands.Choice(name="시황 한국증시만", value="market_kr"),
         app_commands.Choice(name="시황 미국증시만", value="market_us"),
         app_commands.Choice(name="캐시우드 (ARK)", value="ark"),
+        app_commands.Choice(name="봉봉뉴스", value="bongnews"),
     ])
     async def bbup(interaction: discord.Interaction, 종목: app_commands.Choice[str] = None):
         if not await ensure_server_channel_or_dm(interaction):
@@ -253,39 +368,51 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             add_subscriber(interaction.user.id, "all")
             add_market_subscriber(interaction.user.id, "all")
             add_ark_subscriber(interaction.user.id)
+            add_bongnews_subscriber(interaction.user.id)
             await interaction.response.send_message(
-                "✅ 전체 알림 구독 완료 (경기 + 시황 + ARK)\n"
+                "✅ 전체 알림 구독 완료 (경기 + 시황 + ARK + 봉봉뉴스)\n"
                 "• 경기 알림: 24시간 전 / 30분 전 / 10분 전\n"
                 "• 시황 브리핑: 09:00 / 15:30 / 나스닥 개·폐장\n"
-                "• ARK 매매 내역: 매일 07:00",
+                "• ARK 매매 내역: 매일 07:00\n"
+                "📩 지금 바로 첫 브리핑을 DM으로 보내줄게.",
                 ephemeral=True,
             )
         elif mode == "market":
             add_market_subscriber(interaction.user.id, "all")
             await interaction.response.send_message(
                 "✅ 시황 알림 구독 완료 (한국+미국 전체)\n"
-                "매일 09:00 / 15:30 / 나스닥 개·폐장 시 DM으로 시황 브리핑을 보내줄게.",
+                "매일 09:00 / 15:30 / 나스닥 개·폐장 시 DM으로 시황 브리핑을 보내줄게.\n"
+                "📩 지금 바로 첫 브리핑을 DM으로 보내줄게.",
                 ephemeral=True,
             )
         elif mode == "market_kr":
             add_market_subscriber(interaction.user.id, "kr")
             await interaction.response.send_message(
                 "✅ 시황 알림 구독 완료 (한국증시만)\n"
-                "매일 09:00 코스피 개장 / 15:30 코스피 마감 시 DM으로 브리핑을 보내줄게.",
+                "매일 09:00 코스피 개장 / 15:30 코스피 마감 시 DM으로 브리핑을 보내줄게.\n"
+                "📩 지금 바로 첫 브리핑을 DM으로 보내줄게.",
                 ephemeral=True,
             )
         elif mode == "market_us":
             add_market_subscriber(interaction.user.id, "us")
             await interaction.response.send_message(
                 "✅ 시황 알림 구독 완료 (미국증시만)\n"
-                "나스닥 개장 / 마감 시 DM으로 브리핑을 보내줄게.",
+                "나스닥 개장 / 마감 시 DM으로 브리핑을 보내줄게.\n"
+                "📩 지금 바로 첫 브리핑을 DM으로 보내줄게.",
                 ephemeral=True,
             )
         elif mode == "ark":
             add_ark_subscriber(interaction.user.id)
             await interaction.response.send_message(
                 "✅ ARK 매매 알림 구독 완료\n"
-                "매일 07:00 KST에 캐시우드 ARK 전 펀드 매매 내역을 DM으로 보내줄게.",
+                "매일 07:00 KST에 캐시우드 ARK 전 펀드 매매 내역을 DM으로 보내줄게.\n"
+                "📩 지금 바로 최신 매매 내역을 DM으로 보내줄게.",
+                ephemeral=True,
+            )
+        elif mode == "bongnews":
+            add_bongnews_subscriber(interaction.user.id)
+            await interaction.response.send_message(
+                "✅ 봉봉뉴스 구독 완료\n관리자가 뉴스를 발행하면 DM으로 바로 받을 수 있어.",
                 ephemeral=True,
             )
         else:
@@ -295,6 +422,8 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                 ephemeral=True,
             )
 
+        asyncio.get_running_loop().create_task(_send_welcome_dm(interaction.user, mode))
+
     @bot.tree.command(name="bbdown", description="알림 DM 구독 전체 해제 (경기 + 시황 + ARK)")
     async def bbdown(interaction: discord.Interaction):
         if not await ensure_server_channel_or_dm(interaction):
@@ -302,6 +431,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         remove_subscriber(interaction.user.id)
         remove_market_subscriber(interaction.user.id)
         remove_ark_subscriber(interaction.user.id)
+        remove_bongnews_subscriber(interaction.user.id)
         await interaction.response.send_message("❌ 모든 알림 구독 해제 완료", ephemeral=True)
 
     @bot.tree.command(name="bbmk", description="현재 시황 (환율·지수·코인·원자재) 즉시 조회")
@@ -315,7 +445,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         try:
             data = await fetch_market_data()
             msg  = format_market_message(data, "즉시 조회")
-            await interaction.followup.send(msg)
+            await _send_long(interaction.followup, msg)
         except Exception as e:
             await reply_error(interaction, e)
 
@@ -330,7 +460,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         try:
             data = await fetch_ark_trades()
             msg  = format_ark_message(data)
-            await interaction.followup.send(msg)
+            await _send_long(interaction.followup, msg)
         except Exception as e:
             await reply_error(interaction, e)
 
@@ -381,10 +511,10 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                 fetch_ark_trades()  if is_ark else asyncio.sleep(0),
             )
             if is_mkt:
-                await interaction.user.send(format_market_message(mkt_data, "즉시 브리핑"))
+                await _send_long(interaction.user, format_market_message(mkt_data, "즉시 브리핑"))
                 sent.append("📊 시황 브리핑")
             if is_ark:
-                await interaction.user.send(format_ark_message(ark_data))
+                await _send_long(interaction.user, format_ark_message(ark_data))
                 sent.append("🦆 ARK 매매 내역")
 
             # 스포츠 (다음 경기 정보)
@@ -457,16 +587,18 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         if not await ensure_server_channel_or_dm(interaction):
             return
 
-        user_id = interaction.user.id
-        mode    = get_subscriber_mode(user_id)
-        is_mkt  = is_market_subscriber(user_id)
-        is_ark  = is_ark_subscriber(user_id)
+        user_id    = interaction.user.id
+        mode       = get_subscriber_mode(user_id)
+        is_mkt     = is_market_subscriber(user_id)
+        is_ark     = is_ark_subscriber(user_id)
+        is_bnews   = is_bongnews_subscriber(user_id)
 
         sports_status = f"✅ 구독 중 ({MODE_LABELS.get(mode, mode)})" if mode else "❌ 미구독"
         MKT_LABELS = {"all": "한국+미국", "kr": "한국증시만", "us": "미국증시만"}
         mkt_mode = get_market_subscriber_mode(user_id)
-        market_status = f"✅ 구독 중 ({MKT_LABELS.get(mkt_mode, mkt_mode)})" if is_mkt else "❌ 미구독"
-        ark_status    = "✅ 구독 중" if is_ark  else "❌ 미구독"
+        market_status  = f"✅ 구독 중 ({MKT_LABELS.get(mkt_mode, mkt_mode)})" if is_mkt else "❌ 미구독"
+        ark_status     = "✅ 구독 중" if is_ark   else "❌ 미구독"
+        bnews_status   = "✅ 구독 중" if is_bnews else "❌ 미구독"
 
         msg = (
             "**📋 내 구독 현황**\n"
@@ -474,109 +606,11 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             f"⚽ **경기 알림** (토트넘/F1): {sports_status}\n"
             f"📊 **시황 브리핑** (09:00/15:30/나스닥): {market_status}\n"
             f"🦆 **ARK 매매 내역** (07:00): {ark_status}\n"
+            f"📰 **봉봉뉴스**: {bnews_status}\n"
             "\n"
             "`/bbup` — 구독 추가  |  `/bbdown` — 전체 해제"
         )
         await interaction.response.send_message(msg, ephemeral=True)
-
-    @bot.tree.command(name="bbinjury", description="토트넘 현재 부상/출장정지 선수 현황")
-    async def bbinjury(interaction: discord.Interaction):
-        if not await ensure_server_channel(interaction):
-            return
-        try:
-            await interaction.response.defer(thinking=True)
-        except (discord.NotFound, discord.HTTPException):
-            return
-        try:
-            injuries = await scrape_injuries()
-            await interaction.followup.send(format_injury_message(injuries))
-        except Exception as e:
-            await reply_error(interaction, e)
-
-    @app_commands.default_permissions(administrator=True)
-    @bot.tree.command(name="bbtest", description="[관리자] 전체 커맨드 일괄 테스트")
-    async def bbtest(interaction: discord.Interaction):
-        if interaction.guild and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자 전용", ephemeral=True)
-            return
-        try:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-        except (discord.NotFound, discord.HTTPException):
-            return
-
-        async def _run(label: str, coro):
-            try:
-                result = await coro
-                return f"**[BBTEST용 {label}]**\n{result}"
-            except Exception as e:
-                return f"**[BBTEST용 {label}]** ❌ {type(e).__name__}: {e}"
-
-        # /bbtt
-        async def _bbtt():
-            spurs_bytes, recent = await asyncio.gather(
-                fetch_ics_bytes_cached(SPURS_ICS_URL),
-                fetch_spurs_recent_matches(1),
-            )
-            parts = []
-            if recent:
-                parts.append(format_previous_result(recent[0]))
-            ev = find_next_event(parse_events(spurs_bytes))
-            if ev:
-                t = ev["start_kst"].strftime("%Y-%m-%d (%a) %H:%M")
-                parts.append(f"⚽ **다음 경기**\n**{ev['summary']}**\n시작: {t} (KST)")
-            return "\n\n".join(parts) or "일정 없음"
-
-        # /bbf1
-        async def _bbf1():
-            f1_bytes = await fetch_ics_bytes_cached(F1_ICS_URL)
-            gp_name, sessions = find_next_gp_sessions(parse_events(f1_bytes))
-            return fmt_bbf1(gp_name, sessions) if gp_name else "F1 일정 없음"
-
-        # /bbmk
-        async def _bbmk():
-            data = await fetch_market_data()
-            return format_market_message(data, "BBTEST 즉시 조회")
-
-        # /bbark
-        async def _bbark():
-            data = await fetch_ark_trades()
-            return format_ark_message(data)
-
-        tests = [
-            ("/bbtt",  _bbtt()),
-            ("/bbf1",  _bbf1()),
-            ("/bbmk",  _bbmk()),
-            ("/bbark", _bbark()),
-        ]
-
-        for label, coro in tests:
-            msg = await _run(label, coro)
-            if len(msg) > 1900:
-                msg = msg[:1900] + "\n…(생략)"
-            await interaction.followup.send(msg, ephemeral=True)
-
-        # /bbdm — 명령어 친 사람에게만 DM 발송
-        try:
-            mode   = get_subscriber_mode(interaction.user.id)
-            is_mkt = is_market_subscriber(interaction.user.id)
-            is_ark = is_ark_subscriber(interaction.user.id)
-            if not mode and not is_mkt and not is_ark:
-                await interaction.followup.send(
-                    "**[BBTEST용 /bbdm]**\n⚠️ 구독 중인 알림 없음 (bbup 미구독 상태)",
-                    ephemeral=True,
-                )
-            else:
-                mkt_data, ark_data = await asyncio.gather(
-                    fetch_market_data() if is_mkt else asyncio.sleep(0),
-                    fetch_ark_trades()  if is_ark else asyncio.sleep(0),
-                )
-                if is_mkt:
-                    await interaction.user.send("[BBTEST용 /bbdm]\n" + format_market_message(mkt_data, "즉시 브리핑"))
-                if is_ark:
-                    await interaction.user.send("[BBTEST용 /bbdm]\n" + format_ark_message(ark_data))
-                await interaction.followup.send("**[BBTEST용 /bbdm]** ✅ DM 발송 완료", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"**[BBTEST용 /bbdm]** ❌ {type(e).__name__}: {e}", ephemeral=True)
 
     @bot.tree.command(name="bbhelp", description="사용 가능한 모든 명령어를 보여줍니다")
     async def bbhelp(interaction: discord.Interaction):
@@ -618,4 +652,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
             f"내 시황 구독: **{market_status}**\n"
             f"내 ARK 구독:  **{ark_status}**"
         )
-        await interaction.response.send_message(msg, ephemeral=True)
+        try:
+            await interaction.response.send_message(msg, ephemeral=True)
+        except (discord.NotFound, discord.HTTPException):
+            pass

@@ -7,6 +7,7 @@
 import asyncio
 import logging
 import re
+import unicodedata
 from datetime import datetime
 
 from config import KST
@@ -30,6 +31,22 @@ _MONTH_MAP = {
     "may": 5, "june": 6, "july": 7, "august": 8,
     "september": 9, "october": 10, "november": 11, "december": 12,
 }
+
+
+def _normalize(text: str) -> str:
+    """소문자 + 악센트 제거 (Atlético → atletico)."""
+    return unicodedata.normalize("NFD", text.lower()).encode("ascii", "ignore").decode()
+
+
+def _opponent_match(opponent_lower: str, page_text: str) -> bool:
+    """상대팀 이름 퍼지 매칭: 악센트 정규화 후 핵심 단어 포함 여부 확인."""
+    norm_page = _normalize(page_text)
+    norm_opp = _normalize(opponent_lower)
+    if norm_opp in norm_page:
+        return True
+    # 단어별로 확인 (2글자 이상 단어 하나라도 포함되면 매칭)
+    words = [w for w in norm_opp.split() if len(w) >= 3]
+    return any(w in norm_page for w in words)
 
 
 def _parse_bbc_date(text: str) -> tuple[int, int] | None:
@@ -156,7 +173,7 @@ async def scrape_bbc_lineup(uid: str, kickoff_kst: datetime, opponent: str) -> b
                     p_day, p_month = parsed
                     if p_day != kick_day or p_month != kick_month:
                         continue
-                    if opponent_lower not in parent_text.lower():
+                    if not _opponent_match(opponent_lower, parent_text):
                         continue
 
                     match_url = f"https://www.bbc.com{href}" if href.startswith("/") else href

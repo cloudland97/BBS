@@ -164,8 +164,7 @@ async def _fetch_yf(session: aiohttp.ClientSession, symbol: str) -> dict | None:
 _YF_SYMBOLS = [
     "USDKRW=X", "JPYKRW=X", "CNYKRW=X", "DX-Y.NYB",
     "^IXIC",
-    "^KS11", "^KQ11", "^N225",
-    "^VIX",
+    "^KS11", "^KQ11",
     "BTC-USD", "ETH-USD", "USDT-USD",
     "GC=F", "SI=F", "CL=F",
 ]
@@ -250,40 +249,15 @@ async def _fetch_bok_rate() -> tuple[float, float] | None:
         return None
 
 
-async def _fetch_fear_greed() -> dict | None:
-    """CNN Fear & Greed Index 조회 (API 키 불필요)."""
-    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://edition.cnn.com/",
-    }
-    try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as r:
-                r.raise_for_status()
-                data = await r.json(content_type=None)
-                fg = data.get("fear_and_greed", {})
-                score  = fg.get("score")
-                rating = fg.get("rating", "")
-                prev   = fg.get("previous_close")
-                if score is None:
-                    return None
-                return {"score": round(score, 1), "rating": rating, "prev": round(prev, 1) if prev else None}
-    except Exception as e:
-        logger.warning("Fear&Greed fetch 실패: %s %s", type(e).__name__, e)
-        return None
-
 
 async def fetch_market_data() -> dict:
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         yf_results = await asyncio.gather(*[_fetch_yf(session, sym) for sym in _YF_SYMBOLS])
 
-    fed_tuple, bok_tuple, fg, coin_mcap = await asyncio.gather(
+    fed_tuple, bok_tuple, coin_mcap = await asyncio.gather(
         _fetch_fred_rate(_FRED_FED_SERIES),
         _fetch_bok_rate(),
-        _fetch_fear_greed(),
         fetch_coin_marketcaps(),
     )
 
@@ -295,7 +269,6 @@ async def fetch_market_data() -> dict:
     return {
         "yf": dict(zip(_YF_SYMBOLS, yf_results)),
         "rates": {"fed": fed_tuple, "bok": bok_tuple},
-        "fear_greed": fg,
         "mcap": coin_mcap,
     }
 
@@ -384,14 +357,6 @@ def format_market_message(data: dict, label: str) -> str:
         arrow = "▲" if diff > 0 else "▼"
         return f"{icon} {name}  {cur:.2f}%  {arrow} {abs(diff):.2f}%p"
 
-    def krw_coin_row(usd_sym: str, name: str) -> tuple:
-        """USD 코인 가격 × USDKRW 환율 → 원화 표시."""
-        d_coin = yf.get(usd_sym)
-        d_fx   = yf.get("USDKRW=X")
-        if d_coin is None or d_fx is None:
-            return (name, "N/A", None)
-        return (name, format(d_coin["price"] * d_fx["price"], ",.0f"), d_coin["change_pct"])
-
     def krw_metal_row(usd_sym: str, name: str) -> tuple:
         """귀금속 USD/oz × USDKRW ÷ 31.1035 × 3.75 → 원/돈(3.75g) 표시."""
         d_metal = yf.get(usd_sym)
@@ -401,96 +366,63 @@ def format_market_message(data: dict, label: str) -> str:
         krw_per_don = d_metal["price"] * d_fx["price"] / 31.1035 * 3.75
         return (name, format(krw_per_don, ",.0f"), d_metal["change_pct"])
 
-    fx_rows = [
-        yf_row("USDKRW=X", "USD/KRW",  ",.1f"),
-        krw_coin_row("USDT-USD", "USDT/KRW"),
-        jpy_row(),
-        yf_row("CNYKRW=X", "CNY/KRW",  ",.2f"),
-        yf_row("DX-Y.NYB", "DXY",      ",.2f"),
-    ]
-    asian_rows = [
-        yf_row("^KS11", "KOSPI"),
-        yf_row("^KQ11", "KOSDAQ"),
-        yf_row("^N225", "닛케이"),
-        yf_row("^IXIC", "NASDAQ"),
-    ]
+    def krw_coin_row(usd_sym: str, name: str) -> tuple:
+        """USD 코인 가격 × USDKRW 환율 → 원화 표시."""
+        d_coin = yf.get(usd_sym)
+        d_fx   = yf.get("USDKRW=X")
+        if d_coin is None or d_fx is None:
+            return (name, "N/A", None)
+        return (name, format(d_coin["price"] * d_fx["price"], ",.0f"), d_coin["change_pct"])
 
-    def mcap_yf_row(sym: str, name: str, fmt: str = ",.0f") -> tuple:
-        r = yf_row(sym, name, fmt)
-        return (*r, _mcap_tag(sym))
+    def _rates_section() -> str:
+        return "\n".join([
+            _fmt_rate_row("연방기금", rates.get("fed")),
+            _fmt_rate_row("한국은행", rates.get("bok")),
+        ])
 
-    def mcap_krw_row(sym: str, name: str) -> tuple:
-        r = krw_coin_row(sym, name)
-        return (*r, _mcap_tag(sym))
+    def _index_section() -> str:
+        rows = [
+            yf_row("^KS11", "KOSPI"),
+            yf_row("^KQ11", "KOSDAQ"),
+            yf_row("^IXIC", "NASDAQ"),
+        ]
+        return _code_section(rows, dot_fn=_dot)
 
-    def mcap_metal_row(sym: str, name: str) -> tuple:
-        r = krw_metal_row(sym, name)
-        return (*r, _mcap_tag(sym))
+    def _fx_section(_coin=krw_coin_row) -> str:
+        rows = [
+            yf_row("USDKRW=X", "USD/KRW",  ",.1f"),
+            jpy_row(),
+            yf_row("CNYKRW=X", "CNY/KRW",  ",.2f"),
+            yf_row("DX-Y.NYB", "DXY",       ",.2f"),
+            _coin("USDT-USD",  "USDT/KRW"),
+        ]
+        return _code_section(rows, dot_fn=_dot)
 
-    coin_rows = [
-        mcap_yf_row("BTC-USD", "BTC(USD)"),
-        mcap_yf_row("ETH-USD", "ETH(USD)"),
-    ]
-    fg = data.get("fear_greed")
-    _rating_kr = {
-        "Extreme Fear": "극단적 공포", "Fear": "공포",
-        "Neutral": "중립", "Greed": "탐욕", "Extreme Greed": "극단적 탐욕",
-    }
-    _fg_dot = {
-        "Extreme Fear": "🔴", "Fear": "🟠",
-        "Neutral": "🟡", "Greed": "🟢", "Extreme Greed": "🔵",
-    }
-
-    def _fmt_fg() -> str:
-        if fg is None:
-            return "⚪  N/A"
-        score  = fg["score"]
-        rating = _rating_kr.get(fg["rating"], fg["rating"])
-        dot    = _fg_dot.get(fg["rating"], "⚪")
-        prev   = fg.get("prev")
-        diff   = round(score - prev, 1) if prev is not None else None
-        if diff is None or abs(diff) < 0.1:
-            return f"{dot}  {score:.0f}  ({rating})"
-        arrow = "▲" if diff > 0 else "▼"
-        return f"{dot}  {score:.0f}  {arrow} {abs(diff):.1f}  ({rating})"
-
-    commodity_rows = [
-        mcap_metal_row("GC=F", "금(돈/KRW)"),
-        mcap_metal_row("SI=F", "은(돈/KRW)"),
-        yf_row("CL=F", "WTI(bbl)", ",.2f"),
-    ]
-
-    def _vix_dot(v: float) -> str:
-        if v < 15:  return "🟢"
-        if v < 20:  return "🟡"
-        if v < 30:  return "🟠"
-        return "🔴"
-
-    def _vix_fg_block() -> str:
-        vix_d = yf.get("^VIX")
-        if vix_d:
-            dot = _vix_dot(vix_d["price"])
-            vix_line = (
-                f"{dot} VIX       {format(vix_d['price'], ',.2f')}  "
-                f"{_arrow(vix_d['change_pct'])} {abs(vix_d['change_pct']):>5.2f}%"
-            )
-        else:
-            vix_line = "⚪ VIX       N/A"
-        fg_line = f"   공포탐욕  {_fmt_fg()}"
-        return f"```\n{vix_line}\n{fg_line}\n```"
+    def _asset_section() -> str:
+        def coin_row(sym, name):
+            r = yf_row(sym, name)
+            return (*r, _mcap_tag(sym))
+        rows = [
+            (*yf_row("CL=F", "WTI",     ",.2f"), ""),
+            coin_row("BTC-USD", "BTC(USD)"),
+            coin_row("ETH-USD", "ETH(USD)"),
+        ]
+        return _code_section(rows, dot_fn=_dot)
 
     parts = [
         f"📊 **시황 브리핑** — {label}",
         f"📅 {ts} KST",
         "",
         "**🏦 기준금리**",
-        f"```\n{_fmt_rate_row('연방기금  ', rates.get('fed'))}\n{_fmt_rate_row('한국은행  ', rates.get('bok'))}\n```",
-        "**📈 증시 / 변동성**",
-        _code_section(asian_rows, dot_fn=_dot),
-        _vix_fg_block(),
-        "**💱 환율 · 원자재 · 코인**",
-        _code_section(fx_rows),
-        _code_section(commodity_rows, dot_fn=_dot),
-        _code_section(coin_rows, dot_fn=lambda pct: _dot(pct, hi=2.0, lo=0.5)),
+        _rates_section(),
+        "",
+        "**📈 증시**",
+        _index_section(),
+        "",
+        "**💱 환율**",
+        _fx_section(),
+        "",
+        "**🛢️ 원자재 · 코인**",
+        _asset_section(),
     ]
     return "\n".join(parts)

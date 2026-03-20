@@ -27,11 +27,13 @@
 | `/bblineup` | 다음 경기 양 팀 풀 라인업 |
 | `/bbf1` | F1 다음 GP 전체 세션 일정 |
 | `/bbmk` | 글로벌 시황 즉시 조회 (환율·증시·코인·원자재) |
-| `/bbark` | ARK 전 펀드 최근 거래일 매매 내역 조회 |
-| `/bbup` | DM 알림 구독 (토트넘 / F1 / 시황 / ARK / 전체) |
+| `/bbark` | ARK 전 펀드 포트폴리오 Top 20 + 최근 2거래일 매매 내역 |
+| `/bbup` | DM 알림 구독 (토트넘 / F1 / 시황 / ARK / 봉봉뉴스 / 전체) |
 | `/bbdown` | DM 알림 전체 해제 |
 | `/bbdm` | 구독 중인 알림 즉시 DM 수신 |
 | `/bblist` | 내 구독 현황 확인 |
+| `/bbnews` | 봉봉뉴스 전체 구독자 DM 발송 (관리자용) |
+| `/bbuplist` | 카테고리별 구독자 목록 확인 (관리자용) |
 | `/bbhelp` | 명령어 전체 안내 |
 
 ---
@@ -42,7 +44,6 @@
 bot.py              — 봇 진입점, on_ready, 알림 루프
 commands.py         — 슬래시 커맨드
 config.py           — 환경변수, 상수
-sync_commands.py    — 슬래시 커맨드 강제 동기화 스크립트
 utils/
   __init__.py       — re-export (외부 import 진입점)
   storage.py        — JSON 상태 관리
@@ -51,6 +52,7 @@ utils/
   formatters.py     — 메시지 포맷 함수
   market.py         — 시황 데이터 fetch + 포맷
   ark.py            — ARK ETF 데이터 fetch + 포맷
+  bongnews.py       — 봉봉뉴스 구독 관리
 run.bat             — Windows 전용 실행 스크립트 (로그 자동 저장)
 ```
 
@@ -128,6 +130,23 @@ lineup_sent.json / result_sent.json
 ---
 
 ### Phase 3 — Claude (2026-03-11)
+
+#### v1.6 (2026-03-20)
+- **ARK Top 20 개선**
+  - 포트폴리오 순위 기준을 market value로 변경 (AUM 가중 % → 실제 보유 금액 기준)
+  - % 제거, 총 주식수 복원, market value 표시 추가 ($B/$M/$K)
+  - bbark / bbdm / 정기 알림 출력 형식 통일 (포트폴리오 Top 20 + 최근 2거래일 매매 내역)
+- **최적화**: Yahoo Finance AUM fetch 제거 (API 요청 3N → 2N), true_weight dead code 제거
+
+#### v1.5 (2026-03-19)
+- **봉봉뉴스** 기능 추가
+  - `/bbnews`: 관리자가 텍스트 입력 시 전체 구독자에게 DM 발송
+  - `/bbuplist`: 카테고리별 서버 구독자 목록 확인 (관리자 전용)
+  - `/bbup`에 봉봉뉴스 구독 옵션 추가
+- **시황 구독 세분화**: `market_kr` (한국증시만) / `market_us` (미국증시만) 분리 지원
+- **Playwright 브라우저 싱글턴**: 재사용으로 startup 비용 제거
+- `cleanup` 함수 30초 루프 → `on_ready` 1회 실행으로 변경
+- `sync_commands.py`, `injury_scraper.py` 제거
 
 #### v1.4 (2026-03-18)
 - **코드 품질 전반 개선**

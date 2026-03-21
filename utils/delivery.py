@@ -54,9 +54,10 @@ async def send_dms(bot: discord.Client, uids: list[int], msg: str, label: str) -
 
 
 async def send_to_channels(bot: discord.Client, msg: str) -> None:
-    """guild_settings에 등록된 모든 서버 채널에 메시지 발송."""
+    """guild_settings에 등록된 모든 서버 채널에 메시지 발송. 2000자 초과 시 자동 분할."""
     from utils.storage import load_guild_settings
 
+    chunks = split_message(msg)
     guild_settings = load_guild_settings()
     for guild_id_str, settings in guild_settings.items():
         ch_id = settings.get("channel_id")
@@ -66,6 +67,7 @@ async def send_to_channels(bot: discord.Client, msg: str) -> None:
             ch = bot.get_channel(ch_id)
             if ch is None:
                 ch = await bot.fetch_channel(ch_id)
-            await ch.send(msg)
+            for chunk in chunks:
+                await ch.send(chunk)
         except Exception as e:
             logger.warning("채널 발송 실패 (%s): %s %s", guild_id_str, type(e).__name__, e)

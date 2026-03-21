@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import aiohttp
 
 from config import (
-    ARK_ALERT_TIME,
     ARK_ETFS,
     ARK_NOTIFIED_PATH,
     ARK_SUB_PATH,
@@ -296,7 +295,7 @@ def format_ark_message(data: dict) -> str:
         lines.append(f"{i:>2}  {_row_str(ticker, info)}")
     parts.append("**전체 Top 15**\n```\n" + "\n".join(lines) + "\n```")
 
-    # 최근 2거래일 거래 종목 중 Top20 미포함
+    # 최근 2거래일 거래 종목 중 Top15 미포함
     traded_tickers = {
         t.get("ticker")
         for dates_dict in by_etf.values()
@@ -314,7 +313,7 @@ def format_ark_message(data: dict) -> str:
         lines = []
         for i, (ticker, info) in enumerate(extra, len(all_sorted) + 1):
             lines.append(f"{i:>2}  {_row_str(ticker, info)}")
-        parts.append("**최근 거래 종목 (Top20 외)**\n```\n" + "\n".join(lines) + "\n```")
+        parts.append("**최근 거래 종목 (Top15 외)**\n```\n" + "\n".join(lines) + "\n```")
 
     # ── 날짜별 매매 내역 ──────────────────────────────────────
     for date in dates:

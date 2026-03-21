@@ -3,7 +3,6 @@
 
 from utils.storage import (
     ensure_json_files,
-    load_json, save_json,
     load_state, save_state,
     load_lineup_state, save_lineup_state,
     load_result_state, save_result_state,
@@ -16,17 +15,16 @@ from utils.storage import (
 )
 
 from utils.ics import (
-    fetch_ics_bytes, fetch_ics_bytes_cached,
+    fetch_ics_bytes_cached,
     parse_events,
     find_next_event, find_next_n_events, find_recent_spurs_match, find_lineup_window_match,
     find_live_match,
     f1_session_label, f1_session_short, f1_gp_name, find_next_gp_sessions,
-    _shorten_team, extract_opponent,
+    extract_opponent,
     fmt_next, fmt_dm, fmt_bbf1,
 )
 
 from utils.football_data import (
-    fetch_football_data,
     find_fd_match, find_fd_match_cached,
     fetch_fd_match, fetch_fd_lineups, fetch_fd_h2h,
     fetch_spurs_recent_matches,
@@ -88,6 +86,7 @@ from utils.bongnews import (
 )
 
 
+
 __all__ = [
     # storage
     "ensure_json_files",
@@ -101,15 +100,14 @@ __all__ = [
     "get_subscribers_for_source", "get_subscriber_mode",
     "make_key", "cleanup_old_state",
     # ics
-    "fetch_ics_bytes", "fetch_ics_bytes_cached",
+    "fetch_ics_bytes_cached",
     "parse_events",
     "find_next_event", "find_next_n_events", "find_recent_spurs_match", "find_lineup_window_match",
     "find_live_match",
     "f1_session_label", "f1_session_short", "f1_gp_name", "find_next_gp_sessions",
-    "_shorten_team", "extract_opponent",
+    "extract_opponent",
     "fmt_next", "fmt_dm", "fmt_bbf1",
     # football_data
-    "fetch_football_data",
     "find_fd_match", "find_fd_match_cached",
     "fetch_fd_match", "fetch_fd_lineups", "fetch_fd_h2h",
     "fetch_spurs_recent_matches",

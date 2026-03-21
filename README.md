@@ -23,6 +23,10 @@
 - 최근 2거래일 매매 내역 + 평단가 포함
 - 매일 07:00 KST 자동 DM
 
+**고시환율**
+- 전국은행연합회 고시환율 (smbs.biz) — 달러 / 엔화 / 유로 매매기준율
+- 매일 08:35 KST 자동 DM
+
 **뉴스 / 운영**
 - 봉봉뉴스: 관리자가 발행하면 구독자 전체 DM 발송
 - 봇 상태창에 **다음 토트넘 + F1 일정** 표시
@@ -40,7 +44,7 @@
 | `/bbf1` | F1 다음 GP 전체 세션 일정 |
 | `/bbmk` | 글로벌 시황 즉시 조회 (환율·증시·코인·원자재) |
 | `/bbark` | ARK 전 펀드 포트폴리오 Top 20 + 최근 2거래일 매매 내역 |
-| `/bbup` | DM 알림 구독 (토트넘 / F1 / 시황 / ARK / 봉봉뉴스 / 전체) |
+| `/bbup` | DM 알림 구독 (토트넘 / F1 / 시황 / ARK / 봉봉뉴스 / 고시환율 / 전체) |
 | `/bbdown` | DM 알림 전체 해제 |
 | `/bbdm` | 구독 중인 알림 즉시 DM 수신 |
 | `/bblist` | 내 구독 현황 확인 |
@@ -65,6 +69,7 @@ utils/
   market.py         — 시황 데이터 fetch + 포맷
   ark.py            — ARK ETF 데이터 fetch + 포맷
   bongnews.py       — 봉봉뉴스 구독 관리
+  exchange.py       — 고시환율 fetch + 포맷 + 구독 관리
   lineup_scraper.py — BBC Sport 라인업 스크래핑
   playwright_manager.py — Playwright 브라우저 싱글턴
 run.bat             — Windows 전용 실행 스크립트 (로그 자동 저장)
@@ -128,7 +133,12 @@ GUILD_ID=                        # (선택) 특정 서버에만 커맨드 등록
 
 ### ARK 알림 정책
 - 매일 07:00 KST, 평일만 발송
-- 포트폴리오 Top 20 (market value 기준) + 최근 2거래일 매매 내역
+- 포트폴리오 Top 15 (market value 기준) + 최근 2거래일 매매 내역
+
+### 고시환율 알림 정책
+- 매일 09:05 KST, 평일만 발송
+- 매일 08:35 KST (고시 갱신 후), 평일만 발송
+- 전국은행연합회 고시환율 (smbs.biz) — 달러 / 엔화(100엔) / 유로 매매기준율
 
 ### 데이터 제약
 - football-data.org 무료 플랜: 분당 10요청
@@ -143,11 +153,17 @@ lineup_sent.json / result_sent.json
 ark_notified.json / ark_subscribers.json
 market_notified.json / market_subscribers.json
 bongnews_subscribers.json
+exrate_notified.json / exrate_subscribers.json
 ```
 
 ---
 
 ## 최근 변경사항
+
+#### v1.7 (2026-03-22)
+- 고시환율 구독 추가 (`/bbup` → `exrate`) — 달러/엔화/유로 매일 09:05 KST DM
+- 데이터 소스: 전국은행연합회 smbs.biz 고시환율
+- `utils/exchange.py` 신규 (`fetch_exrate`, `format_exrate_message`, 구독 관리)
 
 #### v1.6 (2026-03-20)
 - ARK Top 20 순위 기준 market value로 변경, % 제거·주식수 복원

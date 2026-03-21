@@ -34,7 +34,6 @@ from utils import (
     find_next_event,
     find_next_gp_sessions,
     fmt_bbf1,
-    fmt_next,
     f1_session_label,
     format_h2h_message,
     format_lineup_message,
@@ -407,15 +406,42 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
 
         asyncio.get_running_loop().create_task(_send_welcome_dm(interaction.user, mode))
 
-    @bot.tree.command(name="bbdown", description="알림 DM 구독 전체 해제 (경기 + 시황 + ARK)")
-    async def bbdown(interaction: discord.Interaction):
+    @bot.tree.command(name="bbdown", description="알림 DM 구독 해제 (종목 선택 없으면 전체 해제)")
+    @app_commands.describe(종목="해제할 종목 (선택 안 하면 전체 해제)")
+    @app_commands.choices(종목=[
+        app_commands.Choice(name="토트넘만", value="spurs"),
+        app_commands.Choice(name="F1만", value="f1"),
+        app_commands.Choice(name="시황", value="market"),
+        app_commands.Choice(name="캐시우드 (ARK)", value="ark"),
+        app_commands.Choice(name="봉봉뉴스", value="bongnews"),
+    ])
+    async def bbdown(interaction: discord.Interaction, 종목: app_commands.Choice[str] = None):
         if not await ensure_server_channel_or_dm(interaction):
             return
-        remove_subscriber(interaction.user.id)
-        remove_market_subscriber(interaction.user.id)
-        remove_ark_subscriber(interaction.user.id)
-        remove_bongnews_subscriber(interaction.user.id)
-        await interaction.response.send_message("❌ 모든 알림 구독 해제 완료", ephemeral=True)
+        uid = interaction.user.id
+        if 종목 is None:
+            remove_subscriber(uid)
+            remove_market_subscriber(uid)
+            remove_ark_subscriber(uid)
+            remove_bongnews_subscriber(uid)
+            await interaction.response.send_message("❌ 모든 알림 구독 해제 완료", ephemeral=True)
+        else:
+            mode = 종목.value
+            if mode in ("spurs", "f1"):
+                remove_subscriber(uid)
+                label = "토트넘/F1 경기 알림"
+            elif mode == "market":
+                remove_market_subscriber(uid)
+                label = "시황 브리핑"
+            elif mode == "ark":
+                remove_ark_subscriber(uid)
+                label = "ARK 매매 내역"
+            elif mode == "bongnews":
+                remove_bongnews_subscriber(uid)
+                label = "봉봉뉴스"
+            else:
+                label = mode
+            await interaction.response.send_message(f"❌ {label} 구독 해제 완료", ephemeral=True)
 
     @bot.tree.command(name="bbmk", description="현재 시황 (환율·지수·코인·원자재) 즉시 조회")
     async def bbmk(interaction: discord.Interaction):
@@ -539,7 +565,6 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
 
                 if mode in ("all", "f1"):
                     try:
-                        from utils import fmt_bbf1, find_next_gp_sessions
                         f1_bytes = await fetch_ics_bytes_cached(F1_ICS_URL)
                         gp_name, sessions = find_next_gp_sessions(parse_events(f1_bytes))
                         if gp_name:
@@ -548,7 +573,7 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
                         errors.append(f"F1: {type(e).__name__}")
 
                 for msg in sports_msgs:
-                    await interaction.user.send(msg)
+                    await _send_long(interaction.user, msg)
                 if sports_msgs:
                     sent.append("⚽🏎️ 경기 일정")
 
@@ -579,9 +604,9 @@ def setup(bot: app_commands.CommandTree.__class__) -> None:
         sports_status = f"✅ 구독 중 ({MODE_LABELS.get(mode, mode)})" if mode else "❌ 미구독"
         MKT_LABELS = {"all": "한국+미국", "kr": "한국증시만", "us": "미국증시만"}
         mkt_mode = get_market_subscriber_mode(user_id)
-        market_status  = f"✅ 구독 중 ({MKT_LABELS.get(mkt_mode, mkt_mode)})" if is_mkt else "❌ 미구독"
-        ark_status     = "✅ 구독 중" if is_ark   else "❌ 미구독"
-        bnews_status   = "✅ 구독 중" if is_bnews else "❌ 미구독"
+        market_status = f"✅ 구독 중 ({MKT_LABELS.get(mkt_mode, mkt_mode)})" if is_mkt else "❌ 미구독"
+        ark_status    = "✅ 구독 중" if is_ark   else "❌ 미구독"
+        bnews_status  = "✅ 구독 중" if is_bnews else "❌ 미구독"
 
         msg = (
             "**📋 내 구독 현황**\n"

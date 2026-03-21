@@ -7,6 +7,7 @@ from urllib.parse import quote as url_quote
 import aiohttp
 
 from config import (
+    BOK_API_KEY,
     BOK_LAST_MEETING,
     BOK_RATE,
     ET,
@@ -20,6 +21,7 @@ from config import (
     YF_HEADERS,
 )
 from utils.storage import load_json as _load_json, save_json as _save_json
+from utils.exchange import fetch_exrate
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +167,7 @@ async def _fetch_yf(session: aiohttp.ClientSession, symbol: str) -> dict | None:
 
 
 _YF_SYMBOLS = [
-    "USDKRW=X", "JPYKRW=X", "CNYKRW=X", "DX-Y.NYB",
+    "DX-Y.NYB",
     "^IXIC",
     "^KS11", "^KQ11",
     "BTC-USD", "ETH-USD", "USDT-USD",
@@ -310,7 +312,36 @@ async def _fetch_bok_rate_from_web() -> tuple[float, float, str] | None:
         return result
     except Exception as e:
         logger.warning("BOK 웹 페이지 fetch 실패: %s %s", type(e).__name__, e)
-        return None
+
+    # ECOS API fallback (BOK_API_KEY 설정 시)
+    if BOK_API_KEY:
+        try:
+            ecos_url = (
+                f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}"
+                "/json/kr/1/1/722Y001/D/20240101/20991231/0101000"
+            )
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(ecos_url) as r:
+                    r.raise_for_status()
+                    j = await r.json(content_type=None)
+            rows = j.get("StatisticSearch", {}).get("row", [])
+            if rows:
+                last = rows[-1]
+                cur_rate = float(last["DATA_VALUE"])
+                time_str = last["TIME"]  # YYYYMMDD
+                date_label = f"{time_str[2:4]}.{time_str[4:6]}.{time_str[6:8]}"
+                if not (0.0 <= cur_rate <= 15.0):
+                    logger.warning("ECOS BOK rate 검증 실패: %.2f%%", cur_rate)
+                else:
+                    result = (cur_rate, cur_rate, date_label)
+                    _rate_cache["bok"] = (result, datetime.now(KST).timestamp() + _RATE_CACHE_TTL)
+                    logger.info("ECOS API BOK 금리 수집: %.2f%% (%s)", cur_rate, date_label)
+                    return result
+        except Exception as e:
+            logger.warning("ECOS API BOK 금리 fetch 실패: %s %s", type(e).__name__, e)
+
+    return None
 
 
 
@@ -335,7 +366,6 @@ async def _fetch_kis_token() -> str | None:
     global _kis_token, _kis_token_expires
     if not KIS_APP_KEY or not KIS_APP_SECRET:
         return None
-    global _kis_token, _kis_token_expires
     now = datetime.now(KST)
     if _kis_token and _kis_token_expires and now < _kis_token_expires:
         return _kis_token
@@ -506,7 +536,7 @@ async def _fetch_yf_all() -> list:
 
 async def fetch_market_data() -> dict:
     (yf_results, (
-        fed_tuple, bok_tuple, coin_mcap, investors, night_futures, kis_indices
+        fed_tuple, bok_tuple, coin_mcap, investors, night_futures, kis_indices, exrate
     )) = await asyncio.gather(
         _fetch_yf_all(),
         asyncio.gather(
@@ -516,6 +546,7 @@ async def fetch_market_data() -> dict:
             fetch_investor_trends(),
             fetch_kospi_night_futures(),
             fetch_kis_indices(),
+            fetch_exrate(),
         ),
     )
 
@@ -534,6 +565,7 @@ async def fetch_market_data() -> dict:
         "mcap": coin_mcap,
         "investors": investors,
         "night_futures": night_futures,
+        "exrate": exrate,
     }
 
 
@@ -584,19 +616,18 @@ def format_market_message(data: dict, label: str) -> str:
     now = datetime.now(KST)
     ts  = now.strftime("%m/%d (%a) %H:%M")
     yf  = data.get("yf", {})
+    exrate  = data.get("exrate") or {}
+    ex_rates  = exrate.get("rates", {})
+    ex_diffs  = exrate.get("diffs", {})
+    ex_ups    = exrate.get("updowns", {})
+    ex_date   = exrate.get("date", "")
+    smbs_usd  = ex_rates.get("USD")   # 금속·코인 KRW 환산용
 
     def yf_row(sym: str, name: str, fmt: str = ",.0f") -> tuple:
         d = yf.get(sym)
         if d is None:
             return (name, "N/A", None)
         return (name, format(d["price"], fmt), d["change_pct"])
-
-    def jpy_row() -> tuple:
-        """JPY/KRW 100엔 기준으로 표시."""
-        d = yf.get("JPYKRW=X")
-        if d is None:
-            return ("JPY100/KRW", "N/A", None)
-        return ("JPY100/KRW", format(d["price"] * 100, ",.1f"), d["change_pct"])
 
     rates  = data.get("rates", {})
     mcap   = data.get("mcap", {})  # {yf_sym: {rank, marketcap}}
@@ -625,19 +656,19 @@ def format_market_message(data: dict, label: str) -> str:
     def krw_metal_row(usd_sym: str, name: str) -> tuple:
         """귀금속 USD/oz × USDKRW ÷ 31.1035 × 3.75 → 원/돈(3.75g) 표시."""
         d_metal = yf.get(usd_sym)
-        d_fx    = yf.get("USDKRW=X")
-        if d_metal is None or d_fx is None:
+        usd_rate = smbs_usd
+        if d_metal is None or not usd_rate:
             return (name, "N/A", None)
-        krw_per_don = d_metal["price"] * d_fx["price"] / 31.1035 * 3.75
+        krw_per_don = d_metal["price"] * usd_rate / 31.1035 * 3.75
         return (name, format(krw_per_don, ",.0f"), d_metal["change_pct"])
 
     def krw_coin_row(usd_sym: str, name: str) -> tuple:
         """USD 코인 가격 × USDKRW 환율 → 원화 표시."""
         d_coin = yf.get(usd_sym)
-        d_fx   = yf.get("USDKRW=X")
-        if d_coin is None or d_fx is None:
+        usd_rate = smbs_usd
+        if d_coin is None or not usd_rate:
             return (name, "N/A", None)
-        return (name, format(d_coin["price"] * d_fx["price"], ",.0f"), d_coin["change_pct"])
+        return (name, format(d_coin["price"] * usd_rate, ",.0f"), d_coin["change_pct"])
 
     def _rates_section() -> str:
         return "\n".join([
@@ -698,9 +729,35 @@ def format_market_message(data: dict, label: str) -> str:
             return None
         return "```\n" + "\n".join(lines) + "\n```"
 
+    _EX_ARROW = {"0": "▲", "1": "▼", "3": "─", "2": "▲"}
+    _EX_DOT   = {"0": "🟢", "1": "🔴", "3": "⚪", "2": "🟢"}
+    _EX_LABELS = [
+        ("USD", "USD/KRW", ",.1f"),
+        ("JPY", "JPY/KRW", ",.1f"),
+        ("EUR", "EUR/KRW", ",.1f"),
+        ("CNH", "CNH/KRW", ",.2f"),
+    ]
+
+    def _exrate_section() -> str:
+        """고시환율 (USD/JPY/EUR/CNH) 코드블록."""
+        rows = []
+        for sym, name, fmt in _EX_LABELS:
+            val = ex_rates.get(sym)
+            if val is None:
+                rows.append(f"⚪ {name:<10}  N/A")
+                continue
+            diff  = ex_diffs.get(sym, 0.0)
+            up    = ex_ups.get(sym, "3")
+            dot   = _EX_DOT.get(up, "⚪")
+            arrow = _EX_ARROW.get(up, "─")
+            price_str = format(val, fmt)
+            rows.append(f"{dot} {name:<10}  ₩{price_str:>10}  {arrow}{diff:+.2f}")
+        date_tag = f"  ({ex_date})" if ex_date else ""
+        return "```\n" + "\n".join(rows) + f"\n```{date_tag}"
+
     def _market_section() -> str:
-        """환율 + 원자재·코인 통합, raw price 기준 내림차순."""
-        usdkrw_price = (yf.get("USDKRW=X") or {}).get("price") or 0
+        """원자재·코인 + DXY, raw price 기준 내림차순."""
+        usd_for_conv = smbs_usd or 0.0
 
         def _raw(sym: str) -> float:
             d = yf.get(sym)
@@ -709,25 +766,13 @@ def format_market_message(data: dict, label: str) -> str:
         # (name, price_str, pct, raw_price, mcap_str)
         entries: list[tuple] = []
 
-        # 환율 항목
-        entries.append((*yf_row("USDKRW=X", "USD/KRW", ",.1f"),  _raw("USDKRW=X"), ""))
-        entries.append((*krw_coin_row("USDT-USD", "USDT/KRW"),    _raw("USDT-USD") * usdkrw_price, ""))
-        # JPY100
-        d_jpy = yf.get("JPYKRW=X")
-        jpy_raw = d_jpy["price"] * 100 if d_jpy else 0.0
-        entries.append((*jpy_row(), jpy_raw, ""))
-        entries.append((*yf_row("CNYKRW=X", "CNY/KRW", ",.2f"),  _raw("CNYKRW=X"), ""))
+        entries.append((*krw_coin_row("USDT-USD", "USDT/KRW"),    _raw("USDT-USD") * usd_for_conv, ""))
         entries.append((*yf_row("DX-Y.NYB", "DXY",     ",.2f"),  _raw("DX-Y.NYB"), ""))
-
-        # 원자재·코인
         entries.append((*yf_row("BTC-USD", "BTC(USD)"), _raw("BTC-USD"), _mcap_tag("BTC-USD")))
         entries.append((*yf_row("ETH-USD", "ETH(USD)"), _raw("ETH-USD"), _mcap_tag("ETH-USD")))
         entries.append((*yf_row("CL=F",    "WTI", ",.2f"), _raw("CL=F"), ""))
 
-        # raw price 내림차순 정렬
         entries.sort(key=lambda e: e[3], reverse=True)
-
-        # _code_section 형식으로 변환 (name, price_str, pct, mcap_str)
         rows = [(e[0], e[1], e[2], e[4]) for e in entries]
         return _code_section(rows, dot_fn=_dot)
 
@@ -750,7 +795,10 @@ def format_market_message(data: dict, label: str) -> str:
         parts += ["", "**👥 투자자별 순매수 (KOSPI)**", inv_section]
     parts += [
         "",
-        "**💱 환율 · 원자재 · 코인**",
+        "**💱 고시환율 (USD/JPY/EUR/CNH)**",
+        _exrate_section(),
+        "",
+        "**🛢️ 원자재 · 코인**",
         _market_section(),
     ]
     return "\n".join(parts)

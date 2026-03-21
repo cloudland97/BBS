@@ -2,7 +2,6 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-import aiohttp
 import discord
 from discord.ext import commands, tasks
 
@@ -198,8 +197,6 @@ async def _startup():
     """봇 초기화 단계별 실행. 각 단계가 독립적으로 실패하도록 분리."""
 
     # 1. 인프라 초기화 (실패 시 치명적 — 예외 전파)
-    if not hasattr(bot, "http_session") or bot.http_session is None or bot.http_session.closed:
-        bot.http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
     await init_browser()
 
     # 2. 상태 파일 초기화 + 오래된 항목 정리
@@ -684,9 +681,6 @@ async def on_ark_loop_error(error: Exception):
 # =========================================================
 @bot.event
 async def on_close():
-    if hasattr(bot, "http_session") and bot.http_session and not bot.http_session.closed:
-        await bot.http_session.close()
-        bot.http_session = None
     await close_browser()
 
 

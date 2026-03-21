@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from config import (
     ARK_NOTIFIED_PATH,
     ARK_SUB_PATH,
+    BONGNEWS_SUB_PATH,
     GUILD_SETTINGS_PATH,
     LINEUP_PATH,
     MARKET_NOTIFIED_PATH,
@@ -31,6 +32,7 @@ def ensure_json_files():
         (MARKET_NOTIFIED_PATH, {}),
         (ARK_SUB_PATH, {"users": []}),
         (ARK_NOTIFIED_PATH, {}),
+        (BONGNEWS_SUB_PATH, {"users": []}),
     ]:
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as f:

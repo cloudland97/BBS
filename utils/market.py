@@ -498,18 +498,25 @@ async def fetch_kis_indices() -> dict[str, dict]:
     return result
 
 
-async def fetch_market_data() -> dict:
+async def _fetch_yf_all() -> list:
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        yf_results = await asyncio.gather(*[_fetch_yf(session, sym) for sym in _YF_SYMBOLS])
+        return await asyncio.gather(*[_fetch_yf(session, sym) for sym in _YF_SYMBOLS])
 
-    fed_tuple, bok_tuple, coin_mcap, investors, night_futures, kis_indices = await asyncio.gather(
-        _fetch_fed_rate_from_fomc(),
-        _fetch_bok_rate_from_web(),
-        fetch_coin_marketcaps(),
-        fetch_investor_trends(),
-        fetch_kospi_night_futures(),
-        fetch_kis_indices(),
+
+async def fetch_market_data() -> dict:
+    (yf_results, (
+        fed_tuple, bok_tuple, coin_mcap, investors, night_futures, kis_indices
+    )) = await asyncio.gather(
+        _fetch_yf_all(),
+        asyncio.gather(
+            _fetch_fed_rate_from_fomc(),
+            _fetch_bok_rate_from_web(),
+            fetch_coin_marketcaps(),
+            fetch_investor_trends(),
+            fetch_kospi_night_futures(),
+            fetch_kis_indices(),
+        ),
     )
 
     if fed_tuple is None:

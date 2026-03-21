@@ -253,7 +253,7 @@ def format_ark_message(data: dict) -> str:
                 ticker_info[tkr]["trades"].append({**t, "_etf": etf, "_date": date})
 
     # market_value 기준 정렬
-    all_sorted = sorted(ticker_info.items(), key=lambda x: x[1]["market_value"], reverse=True)[:20]
+    all_sorted = sorted(ticker_info.items(), key=lambda x: x[1]["market_value"], reverse=True)[:15]
 
     def _fmt_mv(v: float) -> str:
         if v >= 1e9:
@@ -290,11 +290,11 @@ def format_ark_message(data: dict) -> str:
 
         return f"{ticker:<6}  {weight_part}{avg_part}{trade_part}"
 
-    top20_set = {ticker for ticker, _ in all_sorted}
+    top15_set = {ticker for ticker, _ in all_sorted}
     lines = []
     for i, (ticker, info) in enumerate(all_sorted, 1):
         lines.append(f"{i:>2}  {_row_str(ticker, info)}")
-    parts.append("**전체 Top 20**\n```\n" + "\n".join(lines) + "\n```")
+    parts.append("**전체 Top 15**\n```\n" + "\n".join(lines) + "\n```")
 
     # 최근 2거래일 거래 종목 중 Top20 미포함
     traded_tickers = {
@@ -307,7 +307,7 @@ def format_ark_message(data: dict) -> str:
     extra = [
         (ticker, info) for ticker, info in
         sorted(ticker_info.items(), key=lambda x: x[1]["market_value"], reverse=True)
-        if ticker in traded_tickers and ticker not in top20_set
+        if ticker in traded_tickers and ticker not in top15_set
     ]
 
     if extra:

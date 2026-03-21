@@ -4,26 +4,9 @@ import logging
 import discord
 from discord import app_commands
 
+from utils.delivery import split_message as _split_chunks
+
 logger = logging.getLogger(__name__)
-
-
-def _split_chunks(msg: str, limit: int = 1900) -> list[str]:
-    if len(msg) <= limit:
-        return [msg]
-    chunks, current, current_len, in_code = [], [], 0, False
-    for line in msg.split("\n"):
-        line_len = len(line) + 1
-        if line.startswith("```"):
-            in_code = not in_code
-        # 코드블록 안에선 분할 금지
-        if current_len + line_len > limit and current and not in_code:
-            chunks.append("\n".join(current))
-            current, current_len = [], 0
-        current.append(line)
-        current_len += line_len
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
 
 
 async def _send_long(target, msg: str):

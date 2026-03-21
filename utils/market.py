@@ -1,17 +1,20 @@
 import asyncio
 import logging
-import urllib.request
+import re
 from datetime import date, datetime, timedelta
 from urllib.parse import quote as url_quote
 
 import aiohttp
 
 from config import (
-    BOK_API_KEY,
+    BOK_LAST_MEETING,
     BOK_RATE,
     ET,
+    FED_LAST_MEETING,
     FED_RATE,
     KST,
+    KIS_APP_KEY,
+    KIS_APP_SECRET,
     MARKET_NOTIFIED_PATH,
     MARKET_SUB_PATH,
     YF_HEADERS,
@@ -169,85 +172,287 @@ _YF_SYMBOLS = [
     "GC=F", "SI=F", "CL=F",
 ]
 
-# FRED series: 미국 연방기금 상단 타깃 (공개 CSV, API 키 불필요)
-_FRED_FED_SERIES = "DFEDTARU"
-
-
-_FRED_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+_SCRAPE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
 
+_FED_BASE = "https://www.federalreserve.gov"
 
-def _fetch_fred_rate_sync(series_id: str) -> tuple[float, float] | None:
-    """FRED 공개 CSV 동기 fetch (urllib 사용, 스레드 실행용)."""
-    start = (datetime.now(KST) - timedelta(days=90)).strftime("%Y-%m-%d")
-    url = (
-        f"https://fred.stlouisfed.org/graph/fredgraph.csv"
-        f"?id={series_id}&observation_start={start}"
-    )
+# 금리는 연 8회만 바뀜 — 1시간 캐시로 불필요한 스크래핑 방지
+_RATE_CACHE_TTL = 3600
+_rate_cache: dict[str, tuple] = {}  # {"fed": (result, expires_ts), "bok": (result, expires_ts)}
+
+
+def _parse_fed_fraction(s: str) -> float | None:
+    """'3-1/2', '3‑3/4' 등 분수 표기(Unicode 하이픈 포함)를 float으로."""
+    s = s.strip().replace("\u2011", "-").replace("\u2010", "-")
+    m = re.match(r"^(\d+)-(\d+)/(\d+)$", s)
+    if m:
+        return int(m.group(1)) + int(m.group(2)) / int(m.group(3))
     try:
-        req = urllib.request.Request(url, headers=_FRED_HEADERS)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            text = resp.read().decode("utf-8-sig")  # BOM 자동 제거
-        values = []
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(",")
-            if len(parts) < 2:
-                continue
-            val = parts[1].strip()
-            if not parts[0][:4].isdigit() or val in (".", ""):  # 날짜가 아니면 헤더
-                continue
-            try:
-                values.append(float(val))
-            except ValueError:
-                continue
-        if not values:
+        return float(s)
+    except ValueError:
+        return None
+
+
+async def _fetch_fed_rate_from_fomc() -> tuple[float, float, str] | None:
+    """Fed FOMC 보도자료 파싱 → (upper_rate, prev_upper_rate, date_str). 실패 시 None."""
+    cached = _rate_cache.get("fed")
+    if cached and datetime.now(KST).timestamp() < cached[1]:
+        return cached[0]
+
+    calendar_url = f"{_FED_BASE}/monetarypolicy/fomccalendars.htm"
+    timeout = aiohttp.ClientTimeout(total=20)
+
+    async def _fetch_text(session: aiohttp.ClientSession, url: str) -> str | None:
+        try:
+            async with session.get(url, headers=_SCRAPE_HEADERS) as r:
+                r.raise_for_status()
+                return await r.text()
+        except Exception as e:
+            logger.warning("FOMC fetch 실패 (%s): %s", url[-30:], e)
             return None
-        current = values[-1]
-        prev = next((v for v in reversed(values[:-1]) if v != current), current)
-        return (current, prev)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            html = await _fetch_text(session, calendar_url)
+            if not html:
+                return None
+
+            date_codes = sorted(
+                set(re.findall(r"/newsevents/pressreleases/monetary(\d{8})a\.htm", html)),
+                reverse=True,
+            )
+            if len(date_codes) < 2:
+                return None
+
+            # 최신 3개 병렬 fetch (2개면 충분하지만 1개 실패 대비)
+            urls = [f"{_FED_BASE}/newsevents/pressreleases/monetary{c}a.htm" for c in date_codes[:3]]
+            texts = await asyncio.gather(*[_fetch_text(session, u) for u in urls])
+
+        _rate_pat = re.compile(
+            r"(?:federal funds rate|target range)\s+(?:at\s+|to\s+remain\s+at\s+)"
+            r"([\d\u2011\-]+(?:/\d+)?)\s+to\s+([\d\u2011\-]+(?:/\d+)?)\s+percent",
+            re.IGNORECASE,
+        )
+        rates: list[tuple[float, str]] = []
+        for code, text in zip(date_codes[:3], texts):
+            if not text:
+                continue
+            m = _rate_pat.search(text)
+            if not m:
+                continue
+            upper = _parse_fed_fraction(m.group(2))
+            if upper is None:
+                continue
+            rates.append((upper, f"{code[2:4]}.{code[4:6]}.{code[6:8]}"))
+
+        if not rates:
+            return None
+        cur_rate, cur_date = rates[0]
+        prev_rate = next((r for r, _ in rates[1:] if r != cur_rate), cur_rate)
+
+        if not (0.0 <= cur_rate <= 15.0):
+            logger.warning("Fed rate 검증 실패: %.2f%%", cur_rate)
+            return None
+        if abs(cur_rate - prev_rate) > 1.0:
+            logger.warning("Fed rate 변동 과대: %.2f → %.2f", prev_rate, cur_rate)
+            return None
+
+        result = (cur_rate, prev_rate, cur_date)
+        _rate_cache["fed"] = (result, datetime.now(KST).timestamp() + _RATE_CACHE_TTL)
+        return result
     except Exception as e:
-        logger.warning("FRED fetch 실패 (%s): %s %s", series_id, type(e).__name__, e)
+        logger.warning("FOMC 페이지 fetch 실패: %s %s", type(e).__name__, e)
         return None
 
 
-async def _fetch_fred_rate(series_id: str) -> tuple[float, float] | None:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _fetch_fred_rate_sync, series_id)
+async def _fetch_bok_rate_from_web() -> tuple[float, float, str] | None:
+    """BOK 영문 공식 페이지 파싱 → (current_rate, prev_rate, date_str). 실패 시 None."""
+    cached = _rate_cache.get("bok")
+    if cached and datetime.now(KST).timestamp() < cached[1]:
+        return cached[0]
 
+    url = "https://www.bok.or.kr/eng/singl/baseRate/progress.do?dataSeCd=01&menuNo=400016"
+    timeout = aiohttp.ClientTimeout(total=20)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=_SCRAPE_HEADERS) as r:
+                r.raise_for_status()
+                html = await r.text()
 
-async def _fetch_bok_rate() -> tuple[float, float] | None:
-    """한국은행 ECOS API로 기준금리 조회. (current, prev) 반환. 키 없으면 None."""
-    if not BOK_API_KEY:
+        # JS 블록 주석(/* ... */) 제거 후 파싱 — 주석 처리된 구버전 배열 무시
+        html_nc = re.sub(r"/\*.*?\*/", "", html, flags=re.DOTALL)
+        # 마지막 항목은 날짜 뒤에 시간 등 추가 문자가 붙을 수 있음: ["2026/03/21 13", ...]
+        pairs = re.findall(r'\["(\d{4}/\d{2}/\d{2})[^"]*",\s*([\d.]+)\]', html_nc)
+        if len(pairs) < 2:
+            return None
+
+        cur_rate = float(pairs[-1][1])
+        prev_rate = next(
+            (float(r) for _, r in reversed(pairs[:-1]) if float(r) != cur_rate),
+            cur_rate,
+        )
+        # 차트는 금리 변경일만 기록 — 동결 포함 마지막 회의일은 config에서 가져옴
+        dt = BOK_LAST_MEETING
+
+        if not (0.0 <= cur_rate <= 15.0):
+            logger.warning("BOK rate 검증 실패: %.2f%%", cur_rate)
+            return None
+        if abs(cur_rate - prev_rate) > 1.0:
+            logger.warning("BOK rate 변동 과대: %.2f → %.2f", prev_rate, cur_rate)
+            return None
+
+        result = (cur_rate, prev_rate, dt)
+        _rate_cache["bok"] = (result, datetime.now(KST).timestamp() + _RATE_CACHE_TTL)
+        return result
+    except Exception as e:
+        logger.warning("BOK 웹 페이지 fetch 실패: %s %s", type(e).__name__, e)
         return None
-    start = (datetime.now(KST) - timedelta(days=365)).strftime("%Y%m%d")
-    end   = datetime.now(KST).strftime("%Y%m%d")
-    url = (
-        f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}"
-        f"/json/kr/1/100/722Y001/D/{start}/{end}/0101000"
-    )
+
+
+
+# =========================================================
+# KIS OpenAPI
+# =========================================================
+_kis_token: str | None = None
+_kis_token_expires: datetime | None = None
+_kis_token_lock: asyncio.Lock | None = None
+_KIS_TOKEN_PATH = "kis_token.json"
+
+
+def _get_kis_lock() -> asyncio.Lock:
+    global _kis_token_lock
+    if _kis_token_lock is None:
+        _kis_token_lock = asyncio.Lock()
+    return _kis_token_lock
+
+
+async def _fetch_kis_token() -> str | None:
+    """KIS OAuth2 액세스 토큰 발급 (24시간 캐시)."""
+    global _kis_token, _kis_token_expires
+    if not KIS_APP_KEY or not KIS_APP_SECRET:
+        return None
+    global _kis_token, _kis_token_expires
+    now = datetime.now(KST)
+    if _kis_token and _kis_token_expires and now < _kis_token_expires:
+        return _kis_token
+    async with _get_kis_lock():
+        if _kis_token and _kis_token_expires and now < _kis_token_expires:
+            return _kis_token
+        # 파일 캐시 확인 (프로세스 재시작 시 토큰 재사용)
+        try:
+            import json as _json
+            with open(_KIS_TOKEN_PATH, encoding="utf-8") as f:
+                cached = _json.load(f)
+            exp = datetime.fromisoformat(cached["expires"])
+            if now < exp and cached.get("token"):
+                _kis_token = cached["token"]
+                _kis_token_expires = exp
+                return _kis_token
+        except Exception:
+            pass
+        # 새 토큰 발급
+        url = "https://openapi.koreainvestment.com:9443/oauth2/tokenP"
+        body = {"grant_type": "client_credentials", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET}
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=body) as r:
+                    r.raise_for_status()
+                    j = await r.json(content_type=None)
+            _kis_token = j.get("access_token")
+            _kis_token_expires = now + timedelta(hours=23)
+            try:
+                import json as _json
+                with open(_KIS_TOKEN_PATH, "w", encoding="utf-8") as f:
+                    _json.dump({"token": _kis_token, "expires": _kis_token_expires.isoformat()}, f)
+            except Exception:
+                pass
+            return _kis_token
+        except Exception as e:
+            logger.warning("KIS 토큰 발급 실패: %s %s", type(e).__name__, e)
+            return None
+
+
+_NAVER_TREND_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+    "Referer": "https://finance.naver.com/",
+}
+
+
+async def fetch_investor_trends() -> dict:
+    """NAVER Finance JSON API — KOSPI/KOSDAQ 투자자별 순매수 (억원).
+    반환: {"kospi": {"개인":int,"외국인":int,"기관":int}, "kosdaq": {...}}
+    실패 시 빈 dict 반환."""
+    def _parse(val: str) -> int:
+        try:
+            return int(str(val).replace(",", "").replace("+", "") or "0")
+        except ValueError:
+            return 0
+
+    result: dict = {}
+    timeout = aiohttp.ClientTimeout(total=8)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for market_key, naver_code in [("kospi", "KOSPI")]:  # KOSDAQ: 추가 시 ("kosdaq", "KOSDAQ") 포함
+                url = f"https://m.stock.naver.com/api/index/{naver_code}/trend"
+                try:
+                    async with session.get(url, headers=_NAVER_TREND_HEADERS) as r:
+                        r.raise_for_status()
+                        j = await r.json(content_type=None)
+                    bizdate = j.get("bizdate", "")
+                    date_fmt = f"{bizdate[2:4]}.{bizdate[4:6]}.{bizdate[6:8]}" if len(bizdate) == 8 else ""
+                    result[market_key] = {
+                        "개인":   _parse(j.get("personalValue", "0")),
+                        "외국인": _parse(j.get("foreignValue", "0")),
+                        "기관":   _parse(j.get("institutionalValue", "0")),
+                        "date":   date_fmt,
+                    }
+                except Exception as e:
+                    logger.warning("NAVER %s 투자자 fetch 실패: %s %s", naver_code, type(e).__name__, e)
+    except Exception as e:
+        logger.warning("투자자 trend fetch 실패: %s %s", type(e).__name__, e)
+    return result
+
+
+async def fetch_kospi_night_futures() -> dict | None:
+    """KIS OpenAPI — 코스피 야간선물 현재가. {price, change_pct}. 실패 시 None."""
+    token = await _fetch_kis_token()
+    if not token:
+        return None
+    url = "https://openapi.koreainvestment.com:9443/uapi/domestic-futureoption/v1/quotations/inquire-price"
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey":        KIS_APP_KEY,
+        "appsecret":     KIS_APP_SECRET,
+        "tr_id":         "FHMIF10000000",
+        "content-type":  "application/json; charset=utf-8",
+    }
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "NF",  # 야간선물
+        "FID_INPUT_ISCD":         "101NF",
+    }
     try:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as r:
+            async with session.get(url, headers=headers, params=params) as r:
                 r.raise_for_status()
-                data = await r.json(content_type=None)
-                rows = data.get("StatisticSearch", {}).get("row", [])
-                values = [float(row["DATA_VALUE"]) for row in rows if row.get("DATA_VALUE")]
-                if not values:
-                    return None
-                current = values[-1]
-                prev = next((v for v in reversed(values[:-1]) if v != current), current)
-                return (current, prev)
+                j = await r.json(content_type=None)
+        out = j.get("output", {})
+        if not out:
+            return None
+        price = float(str(out.get("LAST", "0")).replace(",", "") or "0")
+        prev  = float(str(out.get("PREV_PRICE", "0")).replace(",", "") or "0")
+        if price == 0:
+            return None
+        change_pct = ((price - prev) / prev * 100) if prev else 0.0
+        return {"price": price, "change_pct": change_pct}
     except Exception as e:
-        logger.warning("BOK API fetch 실패: %s %s", type(e).__name__, e)
+        logger.warning("KIS 야간선물 fetch 실패: %s %s", type(e).__name__, e)
         return None
-
 
 
 async def fetch_market_data() -> dict:
@@ -255,21 +460,25 @@ async def fetch_market_data() -> dict:
     async with aiohttp.ClientSession(timeout=timeout) as session:
         yf_results = await asyncio.gather(*[_fetch_yf(session, sym) for sym in _YF_SYMBOLS])
 
-    fed_tuple, bok_tuple, coin_mcap = await asyncio.gather(
-        _fetch_fred_rate(_FRED_FED_SERIES),
-        _fetch_bok_rate(),
+    fed_tuple, bok_tuple, coin_mcap, investors, night_futures = await asyncio.gather(
+        _fetch_fed_rate_from_fomc(),
+        _fetch_bok_rate_from_web(),
         fetch_coin_marketcaps(),
+        fetch_investor_trends(),
+        fetch_kospi_night_futures(),
     )
 
     if fed_tuple is None:
-        fed_tuple = (FED_RATE, FED_RATE)
+        fed_tuple = (FED_RATE, FED_RATE, FED_LAST_MEETING)
     if bok_tuple is None:
-        bok_tuple = (BOK_RATE, BOK_RATE)
+        bok_tuple = (BOK_RATE, BOK_RATE, BOK_LAST_MEETING)
 
     return {
         "yf": dict(zip(_YF_SYMBOLS, yf_results)),
         "rates": {"fed": fed_tuple, "bok": bok_tuple},
         "mcap": coin_mcap,
+        "investors": investors,
+        "night_futures": night_futures,
     }
 
 
@@ -349,13 +558,14 @@ def format_market_message(data: dict, label: str) -> str:
     def _fmt_rate_row(name: str, pair: tuple | None) -> str:
         if pair is None:
             return f"⚪ {name}  N/A"
-        cur, prev = pair
+        cur, prev = pair[0], pair[1]
+        date_tag  = f"  '{pair[2]}" if len(pair) > 2 and pair[2] else ""
         diff = cur - prev
         if abs(diff) < 0.001:
-            return f"⚪ {name}  {cur:.2f}%  (동결)"
+            return f"⚪ {name}  {cur:.2f}%  (동결){date_tag}"
         icon  = "🔴" if diff > 0 else "🟢"
         arrow = "▲" if diff > 0 else "▼"
-        return f"{icon} {name}  {cur:.2f}%  {arrow} {abs(diff):.2f}%p"
+        return f"{icon} {name}  {cur:.2f}%  {arrow} {abs(diff):.2f}%p{date_tag}"
 
     def krw_metal_row(usd_sym: str, name: str) -> tuple:
         """귀금속 USD/oz × USDKRW ÷ 31.1035 × 3.75 → 원/돈(3.75g) 표시."""
@@ -381,33 +591,93 @@ def format_market_message(data: dict, label: str) -> str:
         ])
 
     def _index_section() -> str:
+        # NASDAQ > KOSPI > KOSDAQ (수치 높은 순)
         rows = [
+            yf_row("^IXIC", "NASDAQ"),
             yf_row("^KS11", "KOSPI"),
             yf_row("^KQ11", "KOSDAQ"),
-            yf_row("^IXIC", "NASDAQ"),
         ]
         return _code_section(rows, dot_fn=_dot)
 
-    def _fx_section(_coin=krw_coin_row) -> str:
-        rows = [
-            yf_row("USDKRW=X", "USD/KRW",  ",.1f"),
-            jpy_row(),
-            yf_row("CNYKRW=X", "CNY/KRW",  ",.2f"),
-            yf_row("DX-Y.NYB", "DXY",       ",.2f"),
-            _coin("USDT-USD",  "USDT/KRW"),
-        ]
+    def _night_futures_row() -> str | None:
+        nf = data.get("night_futures")
+        if not nf:
+            return None
+        price = format(nf["price"], ",.2f")
+        pct   = nf["change_pct"]
+        return f"{_dot(pct)} KOSPI야간선물  {price}  {_arrow(pct)} {abs(pct):.2f}%"
+
+    def _investor_section() -> str | None:
+        inv = data.get("investors")
+        if not inv:
+            return None
+
+        def _fmt(v: int) -> str:
+            sign = "+" if v >= 0 else ""
+            return f"{sign}{v:,}억"
+
+        def _inv_dot(v: int) -> str:
+            if v >= 500:  return "🟢"
+            if v >= 100:  return "🟡"
+            if v <= -500: return "🔴"
+            if v <= -100: return "🟠"
+            return "⚪"
+
+        order = ["개인", "외국인", "기관"]
+        markets = [(k, lbl) for k, lbl in [("kospi", "KOSPI"), ("kosdaq", "KOSDAQ")] if inv.get(k)]
+        show_header = len(markets) > 1
+        lines = []
+        for mkt_key, mkt_label in markets:
+            mkt = inv[mkt_key]
+            items = [(k, mkt.get(k, 0)) for k in order]
+            label_w = max(len(k) for k, _ in items)
+            val_w   = max(len(_fmt(v)) for _, v in items)
+            header = f"── {mkt_label} ──" if show_header else ""
+            date_tag = f"  '{mkt['date']}" if mkt.get("date") else ""
+            if header:
+                lines.append(header + date_tag)
+            elif date_tag:
+                lines.append(date_tag.strip())
+            lines += [f"{_inv_dot(v)} {k:<{label_w}}  {_fmt(v):>{val_w}}" for k, v in items]
+        if not lines:
+            return None
+        return "```\n" + "\n".join(lines) + "\n```"
+
+    def _market_section() -> str:
+        """환율 + 원자재·코인 통합, raw price 기준 내림차순."""
+        usdkrw_price = (yf.get("USDKRW=X") or {}).get("price") or 0
+
+        def _raw(sym: str) -> float:
+            d = yf.get(sym)
+            return d["price"] if d else 0.0
+
+        # (name, price_str, pct, raw_price, mcap_str)
+        entries: list[tuple] = []
+
+        # 환율 항목
+        entries.append((*yf_row("USDKRW=X", "USD/KRW", ",.1f"),  _raw("USDKRW=X"), ""))
+        entries.append((*krw_coin_row("USDT-USD", "USDT/KRW"),    _raw("USDT-USD") * usdkrw_price, ""))
+        # JPY100
+        d_jpy = yf.get("JPYKRW=X")
+        jpy_raw = d_jpy["price"] * 100 if d_jpy else 0.0
+        entries.append((*jpy_row(), jpy_raw, ""))
+        entries.append((*yf_row("CNYKRW=X", "CNY/KRW", ",.2f"),  _raw("CNYKRW=X"), ""))
+        entries.append((*yf_row("DX-Y.NYB", "DXY",     ",.2f"),  _raw("DX-Y.NYB"), ""))
+
+        # 원자재·코인
+        entries.append((*yf_row("BTC-USD", "BTC(USD)"), _raw("BTC-USD"), _mcap_tag("BTC-USD")))
+        entries.append((*yf_row("ETH-USD", "ETH(USD)"), _raw("ETH-USD"), _mcap_tag("ETH-USD")))
+        entries.append((*yf_row("CL=F",    "WTI", ",.2f"), _raw("CL=F"), ""))
+
+        # raw price 내림차순 정렬
+        entries.sort(key=lambda e: e[3], reverse=True)
+
+        # _code_section 형식으로 변환 (name, price_str, pct, mcap_str)
+        rows = [(e[0], e[1], e[2], e[4]) for e in entries]
         return _code_section(rows, dot_fn=_dot)
 
-    def _asset_section() -> str:
-        def coin_row(sym, name):
-            r = yf_row(sym, name)
-            return (*r, _mcap_tag(sym))
-        rows = [
-            (*yf_row("CL=F", "WTI",     ",.2f"), ""),
-            coin_row("BTC-USD", "BTC(USD)"),
-            coin_row("ETH-USD", "ETH(USD)"),
-        ]
-        return _code_section(rows, dot_fn=_dot)
+    inv_section = _investor_section()
+    nf_row      = _night_futures_row()
 
     parts = [
         f"📊 **시황 브리핑** — {label}",
@@ -418,11 +688,14 @@ def format_market_message(data: dict, label: str) -> str:
         "",
         "**📈 증시**",
         _index_section(),
+    ]
+    if nf_row:
+        parts += ["", "**🌙 KOSPI 야간선물**", nf_row]
+    if inv_section:
+        parts += ["", "**👥 투자자별 순매수 (KOSPI)**", inv_section]
+    parts += [
         "",
-        "**💱 환율**",
-        _fx_section(),
-        "",
-        "**🛢️ 원자재 · 코인**",
-        _asset_section(),
+        "**💱 환율 · 원자재 · 코인**",
+        _market_section(),
     ]
     return "\n".join(parts)

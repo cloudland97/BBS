@@ -14,7 +14,9 @@ SPURS_ICS_URL = os.getenv("SPURS_ICS_URL")
 F1_ICS_URL = os.getenv("F1_ICS_URL")
 GUILD_ID = os.getenv("GUILD_ID")
 FOOTBALL_DATA_TOKEN = os.getenv("FOOTBALL_DATA_TOKEN")
-BOK_API_KEY = os.getenv("BOK_API_KEY", "")  # ecos.bok.or.kr 발급 (선택)
+BOK_API_KEY    = os.getenv("BOK_API_KEY", "")     # ecos.bok.or.kr 발급 (선택)
+KIS_APP_KEY    = os.getenv("KIS_APP_KEY", "")     # 한국투자증권 OpenAPI
+KIS_APP_SECRET = os.getenv("KIS_APP_SECRET", "")  # 한국투자증권 OpenAPI
 
 GUILD = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
 KST = ZoneInfo("Asia/Seoul")
@@ -54,8 +56,10 @@ ARK_ETFS       = ["ARKK", "ARKW", "ARKG", "ARKQ", "ARKF", "ARKX"]
 ARK_ALERT_TIME = "07:00"
 
 # 기준금리 — 변경 시 수동 업데이트 (한은: 연 8회, Fed: 연 8회 FOMC)
-BOK_RATE = 2.75   # 한국은행 기준금리 (%, 2025-02-25 인하)
-FED_RATE = 4.50   # 연방기금 상단 목표율 (%, 2025-01-29 동결) — FRED fetch 실패 시 fallback
+BOK_RATE         = 2.50   # 한국은행 기준금리 (%, 2025-05-29 인하)
+BOK_LAST_MEETING = "26.02.26"  # 마지막 발표일 (동결 포함)
+FED_RATE         = 3.75   # 연방기금 상단 목표율 (%, 2026-03-18 동결) — FRED fetch 실패 시 fallback
+FED_LAST_MEETING = "26.03.18"  # 마지막 발표일 (동결 포함)
 
 # =========================================================
 # FILE PATHS

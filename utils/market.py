@@ -455,17 +455,61 @@ async def fetch_kospi_night_futures() -> dict | None:
         return None
 
 
+async def fetch_kis_indices() -> dict[str, dict]:
+    """KIS OpenAPI — KOSPI/KOSDAQ 실시간 지수. {'^KS11': {price, change_pct}, ...}
+    실패 시 빈 dict 반환 → YF fallback 사용."""
+    token = await _fetch_kis_token()
+    if not token:
+        return {}
+
+    url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-index-price"
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey":        KIS_APP_KEY,
+        "appsecret":     KIS_APP_SECRET,
+        "tr_id":         "FHPUP02100000",
+        "content-type":  "application/json; charset=utf-8",
+    }
+    # KIS 코드 → YF 심볼 매핑
+    targets = [("0001", "^KS11"), ("1001", "^KQ11")]
+    result: dict[str, dict] = {}
+    timeout = aiohttp.ClientTimeout(total=10)
+
+    async def _fetch_one(session: aiohttp.ClientSession, iscd: str, yf_sym: str):
+        params = {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": iscd}
+        try:
+            async with session.get(url, headers=headers, params=params) as r:
+                r.raise_for_status()
+                j = await r.json(content_type=None)
+            out = j.get("output", {})
+            price = float(str(out.get("bstp_nmix_prpr", "0")).replace(",", "") or "0")
+            pct   = float(str(out.get("bstp_nmix_prdy_ctrt", "0")).replace(",", "") or "0")
+            if price == 0:
+                return
+            result[yf_sym] = {"price": price, "change_pct": pct}
+        except Exception as e:
+            logger.warning("KIS 지수 fetch 실패 (%s): %s %s", iscd, type(e).__name__, e)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            await asyncio.gather(*[_fetch_one(session, iscd, sym) for iscd, sym in targets])
+    except Exception as e:
+        logger.warning("KIS 지수 세션 실패: %s %s", type(e).__name__, e)
+    return result
+
+
 async def fetch_market_data() -> dict:
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         yf_results = await asyncio.gather(*[_fetch_yf(session, sym) for sym in _YF_SYMBOLS])
 
-    fed_tuple, bok_tuple, coin_mcap, investors, night_futures = await asyncio.gather(
+    fed_tuple, bok_tuple, coin_mcap, investors, night_futures, kis_indices = await asyncio.gather(
         _fetch_fed_rate_from_fomc(),
         _fetch_bok_rate_from_web(),
         fetch_coin_marketcaps(),
         fetch_investor_trends(),
         fetch_kospi_night_futures(),
+        fetch_kis_indices(),
     )
 
     if fed_tuple is None:
@@ -473,8 +517,12 @@ async def fetch_market_data() -> dict:
     if bok_tuple is None:
         bok_tuple = (BOK_RATE, BOK_RATE, BOK_LAST_MEETING)
 
+    # KIS 실시간 지수로 YF 결과 대체 (KIS 실패 시 YF 유지)
+    yf_dict = dict(zip(_YF_SYMBOLS, yf_results))
+    yf_dict.update(kis_indices)
+
     return {
-        "yf": dict(zip(_YF_SYMBOLS, yf_results)),
+        "yf": yf_dict,
         "rates": {"fed": fed_tuple, "bok": bok_tuple},
         "mcap": coin_mcap,
         "investors": investors,

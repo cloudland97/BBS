@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 def split_message(msg: str, limit: int = 1900) -> list[str]:
-    """메시지를 limit자 이하 청크로 분할. 코드블록(```) 안에서는 분할하지 않음."""
+    """메시지를 limit자 이하 청크로 분할.
+    코드블록(```) 안에서 분할 시 블록을 닫고 다음 청크에서 다시 열어 렌더링 깨짐 방지."""
     if len(msg) <= limit:
         return [msg]
     chunks: list[str] = []
@@ -23,9 +24,16 @@ def split_message(msg: str, limit: int = 1900) -> list[str]:
         line_len = len(line) + 1
         if line.startswith("```"):
             in_code = not in_code
-        if current_len + line_len > limit and current and not in_code:
-            chunks.append("\n".join(current))
-            current, current_len = [], 0
+        if current_len + line_len > limit and current:
+            if in_code:
+                # 코드블록 내 분할: 현재 블록 닫고 새 청크에서 다시 열기
+                current.append("```")
+                chunks.append("\n".join(current))
+                current = ["```"]
+                current_len = 4
+            else:
+                chunks.append("\n".join(current))
+                current, current_len = [], 0
         current.append(line)
         current_len += line_len
     if current:

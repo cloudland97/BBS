@@ -48,7 +48,6 @@ from utils import (
     get_nasdaq_open_kst,
     get_subscribers_for_source,
     load_ark_notified,
-    load_guild_settings,
     load_lineup_state,
     load_market_notified,
     load_result_state,
@@ -62,6 +61,7 @@ from utils import (
     save_state,
     scrape_bbc_lineup,
 )
+from utils.delivery import send_dms as _delivery_send_dms, send_to_channels as _delivery_send_to_channels
 from utils.playwright_manager import init_browser, close_browser
 
 logging.basicConfig(
@@ -80,9 +80,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 bot_commands.setup(bot)
 
 # 라이브 스코어 상태 (in-memory)
-# 라이브 스코어 상태 (in-memory)
-_live_match_id: int | None = None
-_live_last_goal_count: int = -1  # -1 = 경기 없음
+class _LiveState:
+    match_id: int | None = None
+    last_goal_count: int = -1  # -1 = 경기 없음
+
+_live = _LiveState()
 
 
 async def update_presence():
@@ -120,49 +122,11 @@ async def update_presence():
 
 
 async def send_to_all_guild_channels(message: str):
-    guild_settings = load_guild_settings()
-    for guild_id_str, settings in guild_settings.items():
-        ch_id = settings.get("channel_id")
-        if not ch_id:
-            continue
-        try:
-            ch = bot.get_channel(ch_id)
-            if ch is None:
-                ch = await bot.fetch_channel(ch_id)
-            await ch.send(message)
-        except Exception as e:
-            logger.warning("채널 발송 실패 (%s): %s %s", guild_id_str, type(e).__name__, e)
-
-
-def _split_message(msg: str, limit: int = 1900) -> list[str]:
-    """메시지를 limit자 이하 청크로 분할. 코드블록(```) 안에서는 분할하지 않음."""
-    if len(msg) <= limit:
-        return [msg]
-    chunks, current, current_len, in_code = [], [], 0, False
-    for line in msg.split("\n"):
-        line_len = len(line) + 1
-        if line.startswith("```"):
-            in_code = not in_code
-        if current_len + line_len > limit and current and not in_code:
-            chunks.append("\n".join(current))
-            current, current_len = [], 0
-        current.append(line)
-        current_len += line_len
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
+    await _delivery_send_to_channels(bot, message)
 
 
 async def _send_dms(uids: list[int], msg: str, label: str):
-    """구독자 목록에 DM 발송. 2000자 초과 시 자동 분할. 실패 시 warning 로그."""
-    chunks = _split_message(msg)
-    for uid in uids:
-        try:
-            user = bot.get_user(uid) or await bot.fetch_user(uid)
-            for chunk in chunks:
-                await user.send(chunk)
-        except Exception as e:
-            logger.warning("%s DM 실패 (%s): %s %s", label, uid, type(e).__name__, e)
+    await _delivery_send_dms(bot, uids, msg, label)
 
 
 async def _lineup_suffix(kickoff: datetime, source: str, uid: str = "") -> str:
@@ -228,60 +192,68 @@ async def _opponent_brief_suffix(kickoff: datetime, source: str) -> str:
 
 
 # =========================================================
-# READY / SYNC
+# STARTUP
 # =========================================================
-@bot.event
-async def on_ready():
-    try:
-        # 봇 수명 동안 유지되는 공유 aiohttp 세션
-        if not hasattr(bot, "http_session") or bot.http_session is None or bot.http_session.closed:
-            bot.http_session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=30)
-            )
-        await init_browser()
-        ensure_json_files()
+async def _startup():
+    """봇 초기화 단계별 실행. 각 단계가 독립적으로 실패하도록 분리."""
 
+    # 1. 인프라 초기화 (실패 시 치명적 — 예외 전파)
+    if not hasattr(bot, "http_session") or bot.http_session is None or bot.http_session.closed:
+        bot.http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+    await init_browser()
+
+    # 2. 상태 파일 초기화 + 오래된 항목 정리
+    try:
+        ensure_json_files()
         for load_fn, save_fn in [
             (load_state, save_state),
             (load_lineup_state, save_lineup_state),
             (load_result_state, save_result_state),
         ]:
-            cleaned = cleanup_old_state(load_fn())
-            save_fn(cleaned)
-
-        if GUILD:
-            bot.tree.copy_global_to(guild=GUILD)
-            synced = await bot.tree.sync(guild=GUILD)
-            logger.info("guild sync: %s", [c.name for c in synced])
-        else:
-            synced = await bot.tree.sync()
-            logger.info("global sync: %s", [c.name for c in synced])
-
-        logger.info("로그인 완료: %s", bot.user)
-        await update_presence()
-
-        # 오래된 캐시/상태 정리 (시작 시 1회)
+            save_fn(cleanup_old_state(load_fn()))
         clear_old_lineup_cache(datetime.now(KST) - timedelta(days=1))
         save_market_notified(cleanup_market_notified(load_market_notified()))
         save_ark_notified(cleanup_ark_notified(load_ark_notified()))
-
-        if not live_score_loop.is_running():
-            live_score_loop.start()
-        if not notify_loop.is_running():
-            notify_loop.start()
-        if not lineup_loop.is_running():
-            lineup_loop.start()
-        if not lineup_prefetch_loop.is_running():
-            lineup_prefetch_loop.start()
-        if not result_loop.is_running():
-            result_loop.start()
-        if not market_loop.is_running():
-            market_loop.start()
-        if not ark_loop.is_running():
-            ark_loop.start()
-
     except Exception as e:
-        logger.error("on_ready error: %s %s", type(e).__name__, e)
+        logger.error("상태 초기화 실패: %s %s", type(e).__name__, e)
+
+    # 3. 슬래시 커맨드 sync
+    try:
+        if GUILD:
+            bot.tree.copy_global_to(guild=GUILD)
+            synced = await bot.tree.sync(guild=GUILD)
+        else:
+            synced = await bot.tree.sync()
+        logger.info("커맨드 sync: %s", [c.name for c in synced])
+    except Exception as e:
+        logger.error("커맨드 sync 실패: %s %s", type(e).__name__, e)
+
+    # 4. presence (실패해도 봇 동작에 무관)
+    try:
+        await update_presence()
+    except Exception as e:
+        logger.warning("presence 초기화 실패: %s %s", type(e).__name__, e)
+
+    # 5. 백그라운드 루프 시작
+    _loops = [
+        live_score_loop, notify_loop, lineup_loop, lineup_prefetch_loop,
+        result_loop, market_loop, ark_loop,
+    ]
+    for loop in _loops:
+        if not loop.is_running():
+            loop.start()
+
+
+# =========================================================
+# READY / SYNC
+# =========================================================
+@bot.event
+async def on_ready():
+    logger.info("로그인 완료: %s", bot.user)
+    try:
+        await _startup()
+    except Exception as e:
+        logger.critical("startup 실패 (봇 종료 필요): %s %s", type(e).__name__, e)
 
 
 # =========================================================
@@ -289,14 +261,13 @@ async def on_ready():
 # =========================================================
 @tasks.loop(seconds=60)
 async def live_score_loop():
-    global _live_match_id, _live_last_goal_count
     try:
         spurs_ics = await fetch_ics_bytes_cached(SPURS_ICS_URL)
         live_event = find_live_match(parse_events(spurs_ics))
 
         if not live_event:
-            _live_match_id = None
-            _live_last_goal_count = -1
+            _live.match_id = None
+            _live.last_goal_count = -1
             return
 
         kickoff = live_event["start_kst"]
@@ -316,13 +287,13 @@ async def live_score_loop():
         away_score = full.get("away") if full.get("away") is not None else "-"
 
         # 첫 진입: 기준값 설정 후 대기
-        if _live_match_id != match_id:
-            _live_match_id = match_id
-            _live_last_goal_count = len(goals)
+        if _live.match_id != match_id:
+            _live.match_id = match_id
+            _live.last_goal_count = len(goals)
             return
 
         # 새 골 감지
-        new_goals = goals[_live_last_goal_count:]
+        new_goals = goals[_live.last_goal_count:]
         if new_goals:
             uids = get_subscribers_for_source("spurs")
             for goal in new_goals:
@@ -336,11 +307,11 @@ async def live_score_loop():
                     header = "🔴 **실점**"
                 msg = f"{header} {scorer}{og_suffix} {minute}'\n{home} {home_score} - {away_score} {away}"
                 await _send_dms(uids, msg, "goal_alert")
-            _live_last_goal_count = len(goals)
+            _live.last_goal_count = len(goals)
 
         if status == "FINISHED":
-            _live_match_id = None
-            _live_last_goal_count = -1
+            _live.match_id = None
+            _live.last_goal_count = -1
 
     except Exception as e:
         logger.error("live_score_loop error: %s %s", type(e).__name__, e)
